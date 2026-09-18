@@ -298,6 +298,149 @@ box_get_style(html_content *c,
 
 
 /**
+ * Build the text a content property asks for.
+ *
+ * counter() and counters() produce nothing: this engine keeps no counters
+ * outside the list-item numbering that layout does for itself.  A URI is an
+ * image, which needs a fetch a generated box has no owner for.
+ *
+ * \param n        Element the pseudo element hangs off, for attr()
+ * \param content  Content of type CONTENT_HTML that is being processed
+ * \param items    Content item list, terminated by a NONE item
+ * \param len      Updated with the byte length of the result
+ * \return the text, allocated in the content's box pool, or NULL for none
+ */
+static char *
+box_generated_text(dom_node *n,
+		   html_content *content,
+		   const css_computed_content_item *items,
+		   size_t *len)
+{
+	char *text = talloc_strdup(content->bctx, "");
+
+	if (text == NULL) {
+		return NULL;
+	}
+
+	for (; items->type != CSS_COMPUTED_CONTENT_NONE; items++) {
+		const char *data = NULL;
+		dom_string *value = NULL;
+		size_t data_len = 0;
+		char *piece;
+
+		switch (items->type) {
+		case CSS_COMPUTED_CONTENT_STRING:
+			data = lwc_string_data(items->data.string);
+			data_len = lwc_string_length(items->data.string);
+			break;
+
+		case CSS_COMPUTED_CONTENT_ATTR: {
+			dom_string *name;
+			dom_exception err;
+
+			err = dom_string_create(
+				(const uint8_t *)lwc_string_data(
+						items->data.attr),
+				lwc_string_length(items->data.attr), &name);
+			if (err != DOM_NO_ERR) {
+				break;
+			}
+
+			err = dom_element_get_attribute(n, name, &value);
+			dom_string_unref(name);
+
+			if ((err == DOM_NO_ERR) && (value != NULL)) {
+				data = dom_string_data(value);
+				data_len = dom_string_byte_length(value);
+			}
+			break;
+		}
+
+		default:
+			break;
+		}
+
+		if (data == NULL) {
+			continue;
+		}
+
+		/* neither an interned string nor a dom string promises a
+		 * terminator, so the piece is copied before it is appended
+		 */
+		piece = talloc_strndup(content->bctx, data, data_len);
+		if (piece != NULL) {
+			text = talloc_append_string(content->bctx, text, piece);
+			talloc_free(piece);
+		}
+
+		if (value != NULL) {
+			dom_string_unref(value);
+		}
+
+		if (text == NULL) {
+			return NULL;
+		}
+	}
+
+	*len = strlen(text);
+
+	return (*len > 0) ? text : NULL;
+}
+
+
+/**
+ * Put a run of generated text into a block's inline content.
+ *
+ * The text joins the block's current inline container where there is one, so
+ * that text generated before an element's own children shares their line.
+ *
+ * \param content  Content of type CONTENT_HTML that is being processed
+ * \param parent   Block the text belongs to
+ * \param style    Computed style for the pseudo element
+ * \param text     The text, already in the content's box pool
+ * \param len      Byte length of the text
+ * \return true on success, false on memory exhaustion
+ */
+static bool
+box_generated_text_add(html_content *content,
+		       struct box *parent,
+		       const css_computed_style *style,
+		       char *text,
+		       size_t len)
+{
+	struct box *container = parent->last;
+	struct box *gen;
+
+	if ((container == NULL) ||
+	    (container->type != BOX_INLINE_CONTAINER)) {
+		container = box_create(NULL, NULL, false, NULL, NULL, NULL,
+				NULL, content->bctx);
+		if (container == NULL) {
+			return false;
+		}
+
+		container->type = BOX_INLINE_CONTAINER;
+		box_add_child(parent, container);
+	}
+
+	/** \todo Not wise to drop const from the computed style */
+	gen = box_create(NULL, (css_computed_style *) style, false,
+			NULL, NULL, NULL, NULL, content->bctx);
+	if (gen == NULL) {
+		return false;
+	}
+
+	gen->type = BOX_TEXT;
+	gen->text = text;
+	gen->length = len;
+
+	box_add_child(container, gen);
+
+	return true;
+}
+
+
+/**
  * Construct the box required for a generated element.
  *
  * \param n        XML node of type XML_ELEMENT_NODE
@@ -305,8 +448,9 @@ box_get_style(html_content *c,
  * \param box      Box which may have generated content
  * \param style    Complete computed style for pseudo element, or NULL
  *
- * \todo This is currently incomplete. It just does enough to support
- * the clearfix hack. (http://www.positioniseverything.net/easyclearing.html )
+ * \todo Only a block can carry generated content here.  An inline element's
+ * own box is flattened into its container between its children, so there is
+ * no point in the sequence yet that a pseudo element could be inserted at.
  */
 static void
 box_construct_generate(dom_node *n,
@@ -317,6 +461,8 @@ box_construct_generate(dom_node *n,
 	struct box *gen = NULL;
 	enum css_display_e computed_display;
 	const css_computed_content_item *c_item;
+	size_t len = 0;
+	char *text;
 
 	/* Nothing to generate if the parent box is not a block */
 	if (box->type != BOX_BLOCK)
@@ -332,12 +478,12 @@ box_construct_generate(dom_node *n,
 		return;
 	}
 
+	text = box_generated_text(n, content, c_item, &len);
+
 	/* create box for this element */
 	computed_display = ns_computed_display(style, box_is_root(n));
 	if (computed_display == CSS_DISPLAY_BLOCK ||
 			computed_display == CSS_DISPLAY_TABLE) {
-		/* currently only support block level boxes */
-
 		/** \todo Not wise to drop const from the computed style */
 		gen = box_create(NULL, (css_computed_style *) style,
 				false, NULL, NULL, NULL, NULL, content->bctx);
@@ -350,6 +496,15 @@ box_construct_generate(dom_node *n,
 				style, box_is_root(n))];
 
 		box_add_child(box, gen);
+
+		if (text != NULL) {
+			box_generated_text_add(content, gen, style, text, len);
+		}
+	} else if (text != NULL) {
+		/* Everything else lands in the block's inline content, which
+		 * is where an inline pseudo element belongs anyway.
+		 */
+		box_generated_text_add(content, box, style, text, len);
 	}
 }
 
