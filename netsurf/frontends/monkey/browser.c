@@ -75,7 +75,7 @@ gui_window_create(struct browser_window *bw,
 		  struct gui_window *existing,
 		  gui_window_create_flags flags)
 {
-	struct gui_window *ret = calloc(sizeof(*ret), 1);
+	struct gui_window *ret = calloc(1, sizeof(*ret));
 	if (ret == NULL)
 		return NULL;
 
@@ -623,6 +623,7 @@ monkey_window_handle_exec(int argc, char **argv)
 	struct gui_window *gw;
 	if (argc < 5) {
 		moutf(MOUT_ERROR, "WINDOW EXEC ARGS BAD\n");
+		return;
 	}
 
 	gw = monkey_find_window_by_num(atoi(argv[2]));
@@ -663,6 +664,7 @@ monkey_window_handle_click(int argc, char **argv)
 	struct gui_window *gw;
 	if (argc != 12) {
 		moutf(MOUT_ERROR, "WINDOW CLICK ARGS BAD\n");
+		return;
 	}
 
 	gw = monkey_find_window_by_num(atoi(argv[2]));

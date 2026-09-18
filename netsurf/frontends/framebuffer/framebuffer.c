@@ -30,6 +30,7 @@
 
 #include "utils/utils.h"
 #include "utils/log.h"
+#include "utils/nsoption.h"
 #include "utils/utf8.h"
 #include "netsurf/browser_window.h"
 #include "netsurf/plotters.h"
@@ -573,6 +574,49 @@ static bool framebuffer_format_from_bpp(int bpp, enum nsfb_format_e *fmt)
 
 
 
+/**
+ * Pass the surface related options down to libnsfb.
+ *
+ * libnsfb cannot read the option table, so the device and input device
+ * selection reach the surface as a parameter string instead.
+ */
+static void framebuffer_set_surface_options(nsfb_t *surface)
+{
+    static const char *keys[] = { "device", "input", "inputglob" };
+    const char *values[3];
+    char params[1024];
+    size_t len = 0;
+    unsigned int i;
+
+    values[0] = nsoption_charp(fb_device);
+    values[1] = nsoption_charp(fb_input_devpath);
+    values[2] = nsoption_charp(fb_input_glob);
+
+    params[0] = '\0';
+
+    for (i = 0; i < NOF_ELEMENTS(keys); i++) {
+	int wrote;
+
+	if (values[i] == NULL) {
+	    continue;
+	}
+
+	wrote = snprintf(params + len, sizeof(params) - len, "%s%s=%s",
+			 (len > 0) ? "," : "", keys[i], values[i]);
+	if ((wrote < 0) || ((size_t)wrote >= sizeof(params) - len)) {
+	    NSLOG(netsurf, WARNING, "surface parameters too long, ignoring");
+	    return;
+	}
+
+	len += wrote;
+    }
+
+    if (len > 0) {
+	nsfb_set_parameters(surface, params);
+    }
+}
+
+
 nsfb_t *
 framebuffer_initialise(const char *fename, int width, int height, int bpp)
 {
@@ -596,6 +640,8 @@ framebuffer_initialise(const char *fename, int width, int height, int bpp)
 	NSLOG(netsurf, INFO, "Unable to create %s fb surface\n", fename);
 	return NULL;
     }
+
+    framebuffer_set_surface_options(nsfb);
 
     if (nsfb_set_geometry(nsfb, width, height, fbfmt) == -1) {
 	NSLOG(netsurf, INFO, "Unable to set surface geometry\n");

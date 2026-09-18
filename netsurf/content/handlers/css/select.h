@@ -59,4 +59,14 @@ css_error named_ancestor_node(void *pw, void *node,
 
 css_error node_is_visited(void *pw, void *node, bool *match);
 
+/**
+ * Drop libcss's cached selection results from a subtree.
+ *
+ * Call before selecting styles for nodes that have already been selected
+ * for once, such as when the box tree is rebuilt after a DOM change.
+ *
+ * \param node Root of the subtree to invalidate.
+ */
+void nscss_invalidate_node_data(dom_node *node);
+
 #endif

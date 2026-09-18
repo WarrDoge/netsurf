@@ -6,8 +6,8 @@
 CFLAGS += -O2
 
 # Framebuffer default surface provider.
-# Valid values are: x, sdl, linux, vnc, able,
-NETSURF_FB_FRONTEND := sdl
+# Valid values are: linux, x, sdl, vnc
+NETSURF_FB_FRONTEND := linux
 
 # Use libharu to enable PDF export and GTK printing support.
 # Valid options: YES, NO
@@ -19,11 +19,11 @@ NETSURF_USE_NSSVG := AUTO
 
 # Enable NetSurf's use of librosprite for displaying RISC OS Sprites
 # Valid options: YES, NO, AUTO
-NETSURF_USE_ROSPRITE := AUTO
+NETSURF_USE_ROSPRITE := NO
 
 # Library to use for font plotting
 # Valid options: internal, freetype
-NETSURF_FB_FONTLIB := internal
+NETSURF_FB_FONTLIB := freetype
 
 # Default freetype font files
 NETSURF_FB_FONT_SANS_SERIF := DejaVuSans.ttf

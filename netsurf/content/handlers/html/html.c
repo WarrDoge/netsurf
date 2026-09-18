@@ -68,6 +68,7 @@
 #include "html/box_construct.h"
 #include "html/box_inspect.h"
 #include "html/form_internal.h"
+#include "css/select.h"
 #include "html/imagemap.h"
 #include "html/layout.h"
 #include "html/textselection.h"
@@ -206,6 +207,15 @@ bool fire_dom_keyboard_event(dom_string *type, dom_node *target,
 	dom_event_unref(evt);
 	return result;
 }
+
+static void html_rebuild_box_tree(void *pw);
+static void html_rebuild_box_tree_done(html_content *c, bool success);
+static void html_clear_selection(struct content *c);
+static void html_free_forms(struct form *forms);
+
+/** How long to wait, in milliseconds, before retrying a rebuild that
+ * the document was not yet settled enough to run. */
+#define HTML_REFLOW_RETRY_MS 500
 
 /**
  * Perform post-box-creation conversion of a document
@@ -829,12 +839,67 @@ bool html_can_begin_conversion(html_content *htmlc)
 	return true;
 }
 
+/**
+ * Build the document's form list, with every action resolved against the
+ * base URL.
+ *
+ * Box construction attaches each control to the form that already names its
+ * element, so this has to run before a box tree is built, and again before
+ * any tree that replaces it.
+ */
+static nserror html_build_forms(html_content *htmlc)
+{
+	struct form *f;
+	nserror ns_error;
+
+	htmlc->forms = html_forms_get_forms(htmlc->encoding,
+			(dom_html_document *) htmlc->document);
+
+	for (f = htmlc->forms; f != NULL; f = f->prev) {
+		nsurl *action;
+
+		/* Make all actions absolute */
+		if (f->action == NULL || f->action[0] == '\0') {
+			/* HTML5 4.10.22.3 step 9 */
+			nsurl *doc_addr = content_get_url(&htmlc->base);
+			ns_error = nsurl_join(htmlc->base_url,
+					      nsurl_access(doc_addr),
+					      &action);
+		} else {
+			ns_error = nsurl_join(htmlc->base_url,
+					      f->action,
+					      &action);
+		}
+
+		if (ns_error != NSERROR_OK) {
+			return ns_error;
+		}
+
+		free(f->action);
+		f->action = strdup(nsurl_access(action));
+		nsurl_unref(action);
+		if (f->action == NULL) {
+			return NSERROR_NOMEM;
+		}
+
+		/* Ensure each form has a document encoding */
+		if (f->document_charset == NULL) {
+			f->document_charset = strdup(htmlc->encoding);
+			if (f->document_charset == NULL) {
+				return NSERROR_NOMEM;
+			}
+		}
+	}
+
+	return NSERROR_OK;
+}
+
+
 bool
 html_begin_conversion(html_content *htmlc)
 {
 	dom_node *html;
 	nserror ns_error;
-	struct form *f;
 	dom_exception exc; /* returned by libdom functions */
 	dom_string *node_name = NULL;
 	dom_hubbub_error error;
@@ -941,54 +1006,11 @@ html_begin_conversion(html_content *htmlc)
 	dom_string_unref(node_name);
 
 	/* Retrieve forms from parser */
-	htmlc->forms = html_forms_get_forms(htmlc->encoding,
-			(dom_html_document *) htmlc->document);
-	for (f = htmlc->forms; f != NULL; f = f->prev) {
-		nsurl *action;
-
-		/* Make all actions absolute */
-		if (f->action == NULL || f->action[0] == '\0') {
-			/* HTML5 4.10.22.3 step 9 */
-			nsurl *doc_addr = content_get_url(&htmlc->base);
-			ns_error = nsurl_join(htmlc->base_url,
-					      nsurl_access(doc_addr),
-					      &action);
-		} else {
-			ns_error = nsurl_join(htmlc->base_url,
-					      f->action,
-					      &action);
-		}
-
-		if (ns_error != NSERROR_OK) {
-			content_broadcast_error(&htmlc->base, ns_error, NULL);
-
-			dom_node_unref(html);
-			return false;
-		}
-
-		free(f->action);
-		f->action = strdup(nsurl_access(action));
-		nsurl_unref(action);
-		if (f->action == NULL) {
-			content_broadcast_error(&htmlc->base,
-						NSERROR_NOMEM,
-						NULL);
-
-			dom_node_unref(html);
-			return false;
-		}
-
-		/* Ensure each form has a document encoding */
-		if (f->document_charset == NULL) {
-			f->document_charset = strdup(htmlc->encoding);
-			if (f->document_charset == NULL) {
-				content_broadcast_error(&htmlc->base,
-							NSERROR_NOMEM,
-							NULL);
-				dom_node_unref(html);
-				return false;
-			}
-		}
+	ns_error = html_build_forms(htmlc);
+	if (ns_error != NSERROR_OK) {
+		content_broadcast_error(&htmlc->base, ns_error, NULL);
+		dom_node_unref(html);
+		return false;
 	}
 
 	dom_node_unref(html);
@@ -1206,6 +1228,8 @@ static void html_destroy(struct content *c)
 
 	NSLOG(netsurf, INFO, "content %p", c);
 
+	guit->misc->schedule(-1, html_rebuild_box_tree, html);
+
 	/* If we're still converting a layout, cancel it */
 	if (html->box_conversion_context != NULL) {
 		if (cancel_dom_to_box(html->box_conversion_context) != NSERROR_OK) {
@@ -1214,6 +1238,24 @@ static void html_destroy(struct content *c)
 	}
 
 	selection_destroy(html->sel);
+
+	/* a rebuild caught in flight still owns the outgoing tree */
+	if (html->reflow_old.active) {
+		struct content_html_object *live_list = html->object_list;
+		unsigned int live_count = html->num_objects;
+
+		html_free_forms(html->reflow_old.forms);
+		html->object_list = html->reflow_old.object_list;
+		html->num_objects = html->reflow_old.num_objects;
+		html_object_free_objects(html);
+		html->object_list = live_list;
+		html->num_objects = live_count;
+
+		if (html->reflow_old.bctx != NULL) {
+			talloc_free(html->reflow_old.bctx);
+		}
+		memset(&html->reflow_old, 0, sizeof(html->reflow_old));
+	}
 
 	/* Destroy forms */
 	for (f = html->forms; f != NULL; f = g) {
@@ -1407,6 +1449,319 @@ static void html_clear_selection(struct content *c)
 	/* There is no selection now. */
 	html->selection_type = HTML_SELECTION_NONE;
 	html->selection_owner.none = true;
+}
+
+
+/**
+ * Release everything that names a box in the tree that is about to be
+ * replaced.
+ */
+static void html_free_forms(struct form *forms)
+{
+	struct form *f, *g;
+
+	/* Form controls are rebuilt from the DOM. What the user typed is
+	 * already there, because form_gadget_sync_with_dom writes every
+	 * edit back to the element.
+	 */
+	for (f = forms; f != NULL; f = g) {
+		g = f->prev;
+		form_free(f);
+	}
+}
+
+
+/**
+ * Set the current box tree aside so a replacement can be built.
+ *
+ * dom_to_box converts incrementally and only publishes the new tree when it
+ * finishes, so the old one has to stay drawable in the meantime. Everything
+ * the outgoing boxes own moves aside with them; what replaces it is built
+ * into a fresh talloc context.
+ */
+static void html_detach_box_tree(html_content *htmlc)
+{
+	htmlc->reflow_old.bctx = htmlc->bctx;
+	htmlc->reflow_old.forms = htmlc->forms;
+	htmlc->reflow_old.object_list = htmlc->object_list;
+	htmlc->reflow_old.num_objects = htmlc->num_objects;
+	htmlc->reflow_old.active = true;
+
+	/* the caret is a box pointer, but the element behind it survives */
+	if ((htmlc->focus_type == HTML_FOCUS_TEXTAREA) &&
+	    (htmlc->focus_owner.textarea != NULL) &&
+	    (htmlc->focus_owner.textarea->node != NULL) &&
+	    (htmlc->reflow_focus == NULL)) {
+		htmlc->reflow_focus = htmlc->focus_owner.textarea->node;
+		dom_node_ref(htmlc->reflow_focus);
+	}
+
+	htmlc->bctx = NULL;
+	htmlc->forms = NULL;
+	htmlc->object_list = NULL;
+	htmlc->num_objects = 0;
+}
+
+
+/**
+ * Free the set-aside box tree once its replacement is in place.
+ */
+static void html_discard_detached_box_tree(html_content *htmlc)
+{
+	struct content_html_object *live_list;
+	unsigned int live_count;
+
+	if (htmlc->reflow_old.active == false) {
+		return;
+	}
+
+	/* the selection, the drag target and the input focus all point at
+	 * boxes directly, and those boxes are the ones about to go
+	 */
+	html_clear_selection(&htmlc->base);
+
+	htmlc->drag_type = HTML_DRAG_NONE;
+	htmlc->drag_owner.no_owner = true;
+
+	htmlc->focus_type = HTML_FOCUS_SELF;
+	htmlc->focus_owner.self = true;
+
+	htmlc->visible_select_menu = NULL;
+
+	/* imagemap_destroy frees the table without clearing the pointer, and
+	 * imagemap_create only allocates when it finds NULL
+	 */
+	imagemap_destroy(htmlc);
+	htmlc->imagemaps = NULL;
+
+	html_free_forms(htmlc->reflow_old.forms);
+
+	/* Releasing the object handles does not evict the underlying
+	 * contents, so the rebuild refetches them from the cache rather than
+	 * the network.
+	 */
+	live_list = htmlc->object_list;
+	live_count = htmlc->num_objects;
+	htmlc->object_list = htmlc->reflow_old.object_list;
+	htmlc->num_objects = htmlc->reflow_old.num_objects;
+	html_object_free_objects(htmlc);
+	htmlc->object_list = live_list;
+	htmlc->num_objects = live_count;
+
+	if (htmlc->reflow_old.bctx != NULL) {
+		talloc_free(htmlc->reflow_old.bctx);
+	}
+
+	memset(&htmlc->reflow_old, 0, sizeof(htmlc->reflow_old));
+}
+
+
+/**
+ * Put the set-aside box tree back after a rebuild failed to produce one.
+ */
+static void html_restore_detached_box_tree(html_content *htmlc)
+{
+	if (htmlc->reflow_old.active == false) {
+		return;
+	}
+
+	/* discard whatever the abandoned conversion managed to build; it
+	 * never reached c->layout, which still names the old tree
+	 */
+	html_free_forms(htmlc->forms);
+	html_object_free_objects(htmlc);
+	if (htmlc->bctx != NULL) {
+		talloc_free(htmlc->bctx);
+	}
+
+	htmlc->bctx = htmlc->reflow_old.bctx;
+	htmlc->forms = htmlc->reflow_old.forms;
+	htmlc->object_list = htmlc->reflow_old.object_list;
+	htmlc->num_objects = htmlc->reflow_old.num_objects;
+
+	memset(&htmlc->reflow_old, 0, sizeof(htmlc->reflow_old));
+}
+
+
+/**
+ * Finish a box tree rebuild and lay the new tree out.
+ */
+static struct box *html_find_box_for_node(struct box *box, dom_node *node)
+{
+	struct box *child;
+	struct box *found;
+
+	if (box == NULL) {
+		return NULL;
+	}
+
+	if (box->node == node) {
+		return box;
+	}
+
+	for (child = box->children; child != NULL; child = child->next) {
+		found = html_find_box_for_node(child, node);
+		if (found != NULL) {
+			return found;
+		}
+	}
+
+	return NULL;
+}
+
+
+/**
+ * Put the caret back in the field it was in before a reflow.
+ *
+ * Setting the caret is what tells the rest of the browser where the focus
+ * is, so this restores both. The offset is not recoverable, and the field
+ * holds what the user has typed so far, so the caret goes to the end.
+ */
+static void html_restore_reflow_focus(html_content *htmlc)
+{
+	struct box *box;
+	struct textarea *ta;
+	int len;
+
+	if (htmlc->reflow_focus == NULL) {
+		return;
+	}
+
+	box = html_find_box_for_node(htmlc->layout, htmlc->reflow_focus);
+
+	dom_node_unref(htmlc->reflow_focus);
+	htmlc->reflow_focus = NULL;
+
+	if ((box == NULL) || (box->gadget == NULL)) {
+		return;
+	}
+
+	if ((box->gadget->type != GADGET_TEXTAREA) &&
+	    (box->gadget->type != GADGET_TEXTBOX) &&
+	    (box->gadget->type != GADGET_PASSWORD)) {
+		return;
+	}
+
+	ta = box->gadget->data.text.ta;
+	if (ta == NULL) {
+		return;
+	}
+
+	len = textarea_get_text(ta, NULL, 0);
+	textarea_set_caret(ta, (len > 0) ? len - 1 : 0);
+}
+
+
+static void html_rebuild_box_tree_done(html_content *c, bool success)
+{
+	c->box_conversion_context = NULL;
+
+	if ((success == false) || c->aborted || (c->layout == NULL)) {
+		NSLOG(netsurf, WARNING, "box rebuild failed");
+		html_restore_detached_box_tree(c);
+		return;
+	}
+
+	html_discard_detached_box_tree(c);
+
+	if (imagemap_extract(c) != NSERROR_OK) {
+		NSLOG(netsurf, WARNING, "imagemap extraction failed");
+	}
+
+	content__reformat(&c->base, false,
+			c->base.available_width,
+			c->base.available_height);
+
+	html_restore_reflow_focus(c);
+}
+
+
+/**
+ * Rebuild the box tree from the current DOM.
+ *
+ * Scheduled from the DOM mutation events rather than run inline: a single
+ * innerHTML assignment emits one event per inserted node, and
+ * guit->misc->schedule replaces any pending callback with the same context,
+ * so a burst collapses into one rebuild.
+ *
+ * The whole tree is rebuilt rather than the changed subtree. That is
+ * O(document) per mutation batch, which is the wrong complexity for a
+ * mutation heavy page, but NetSurf has no partial invalidation to build on
+ * and a correct full rebuild is far less code than inventing one. The
+ * upgrade path is per-subtree invalidation driven by these same events.
+ */
+static void html_rebuild_box_tree(void *pw)
+{
+	html_content *htmlc = pw;
+	dom_exception exc;
+	dom_node *html;
+	nserror error;
+
+	/* Wait for the document to settle rather than trying to unpick the
+	 * active fetch count of a conversion that is still in flight.
+	 */
+	if ((htmlc->select_ctx == NULL) ||
+	    (htmlc->box_conversion_context != NULL) ||
+	    (content__get_status(&htmlc->base) != CONTENT_STATUS_DONE)) {
+		guit->misc->schedule(HTML_REFLOW_RETRY_MS,
+				html_rebuild_box_tree, htmlc);
+		return;
+	}
+
+	if (htmlc->aborted || htmlc->document == NULL) {
+		return;
+	}
+
+	/* A frameset has no box tree to speak of, and rebuilding a document
+	 * holding iframes would tear down child browser windows that only
+	 * browser_window_create_iframes can put back.
+	 */
+	if ((htmlc->frameset != NULL) || (htmlc->iframe != NULL)) {
+		return;
+	}
+
+	exc = dom_document_get_document_element(htmlc->document, (void *) &html);
+	if ((exc != DOM_NO_ERR) || (html == NULL)) {
+		return;
+	}
+
+	html_detach_box_tree(htmlc);
+	nscss_invalidate_node_data(html);
+
+	/* box construction only attaches a control to a form that is already
+	 * in the list, so the list has to be rebuilt first
+	 */
+	if (html_build_forms(htmlc) != NSERROR_OK) {
+		NSLOG(netsurf, WARNING, "form rebuild failed");
+		html_restore_detached_box_tree(htmlc);
+		dom_node_unref(html);
+		return;
+	}
+
+	error = dom_to_box(html, htmlc, html_rebuild_box_tree_done,
+			&htmlc->box_conversion_context);
+	if (error != NSERROR_OK) {
+		NSLOG(netsurf, WARNING, "box rebuild could not be started");
+		html_restore_detached_box_tree(htmlc);
+	}
+
+	dom_node_unref(html);
+}
+
+
+/* exported interface documented in html/private.h */
+void html_schedule_reflow(html_content *htmlc)
+{
+	/* Nothing to rebuild until the first conversion has produced a tree,
+	 * and nothing to do while layout is running: the mutation events
+	 * raised during box construction would otherwise schedule a rebuild
+	 * of the tree being constructed.
+	 */
+	if ((htmlc->layout == NULL) || htmlc->reflowing) {
+		return;
+	}
+
+	guit->misc->schedule(0, html_rebuild_box_tree, htmlc);
 }
 
 

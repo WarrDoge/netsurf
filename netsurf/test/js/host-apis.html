@@ -1,0 +1,49 @@
+<!DOCTYPE html><html><head><title>host apis</title><style>
+body{font-family:sans-serif;margin:8px;font-size:13px}
+#out{padding:6px;white-space:pre}
+.ok{background:#227722;color:#fff}.bad{background:#cc2222;color:#fff}
+</style></head><body>
+<div id="out">running</div>
+<script>
+var r = [];
+function ck(name, got, want) {
+  r.push((got === want ? 'ok' : 'FAIL') + ' ' + name + ' = ' + got +
+         (got === want ? '' : ' (want ' + want + ')'));
+}
+function done() {
+  var bad = [];
+  for (var i = 0; i < r.length; i++) { if (r[i].indexOf('ok ') !== 0) bad.push(r[i]); }
+  var d = document.getElementById('out');
+  while (d.firstChild) d.removeChild(d.firstChild);
+  d.className = bad.length ? 'bad' : 'ok';
+  d.appendChild(document.createTextNode(bad.length ? bad.join('\n') :
+    ('all ' + r.length + ' host api checks passed')));
+}
+ck('localStorage', typeof localStorage, 'object');
+ck('sessionStorage', typeof sessionStorage, 'object');
+ck('rAF', typeof requestAnimationFrame, 'function');
+ck('cAF', typeof cancelAnimationFrame, 'function');
+localStorage.setItem('k', 'v');
+ck('getItem', localStorage.getItem('k'), 'v');
+ck('length', localStorage.length, 1);
+ck('key(0)', localStorage.key(0), 'k');
+ck('missing', localStorage.getItem('nope'), null);
+localStorage.setItem('n', 7);
+ck('coerced', localStorage.getItem('n'), '7');
+localStorage.removeItem('k');
+ck('after remove', localStorage.length, 1);
+localStorage.clear();
+ck('after clear', localStorage.length, 0);
+sessionStorage.setItem('s', '1');
+ck('separate stores', localStorage.getItem('s'), null);
+var cancelled = false;
+var h = requestAnimationFrame(function () { cancelled = true; });
+cancelAnimationFrame(h);
+requestAnimationFrame(function (t) {
+  ck('rAF fired', true, true);
+  ck('rAF timestamp is a number', typeof t, 'number');
+  ck('cancelled frame did not run', cancelled, false);
+  done();
+});
+done();
+</script></body></html>

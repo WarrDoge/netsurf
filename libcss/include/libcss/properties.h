@@ -140,6 +140,7 @@ enum css_properties_e {
 	CSS_PROP_ORDER				= 0x07b,
 	CSS_PROP_FILL_OPACITY			= 0x07c,
 	CSS_PROP_STROKE_OPACITY			= 0x07d,
+	CSS_PROP_ROW_GAP			= 0x07e,
 
 	CSS_N_PROPERTIES
 };
@@ -332,6 +333,12 @@ enum css_column_gap_e {
 	CSS_COLUMN_GAP_INHERIT			= 0x0,
 	CSS_COLUMN_GAP_SET			= 0x1,
 	CSS_COLUMN_GAP_NORMAL			= 0x2
+};
+
+enum css_row_gap_e {
+	CSS_ROW_GAP_INHERIT			= CSS_COLUMN_GAP_INHERIT,
+	CSS_ROW_GAP_SET				= CSS_COLUMN_GAP_SET,
+	CSS_ROW_GAP_NORMAL			= CSS_COLUMN_GAP_NORMAL
 };
 
 enum css_column_rule_color_e {

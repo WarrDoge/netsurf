@@ -1,0 +1,44 @@
+<html>
+  <head>
+    <title>Promise test</title>
+  </head>
+  <body>
+    <p id="out">pending</p>
+    <script>
+      var order = [];
+
+      function report() {
+        var p = document.getElementById("out");
+        while (p.firstChild) { p.removeChild(p.firstChild); }
+        p.appendChild(document.createTextNode(order.join(" ")));
+      }
+
+      Promise.resolve(41).then(function (v) {
+        return v + 1;
+      }).then(function (v) {
+        order.push("chain" + v);
+        report();
+      });
+
+      Promise.reject(new Error("boom"))["catch"](function (e) {
+        order.push("caught-" + e.message);
+        report();
+      });
+
+      Promise.all([1, Promise.resolve(2), 3]).then(function (v) {
+        order.push("all" + v.join(""));
+        report();
+      });
+
+      setTimeout(function () {
+        Promise.resolve("timer").then(function (v) {
+          order.push("after-" + v);
+          report();
+        });
+      }, 100);
+
+      order.push("sync");
+      report();
+    </script>
+  </body>
+</html>

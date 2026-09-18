@@ -660,6 +660,10 @@ dom_default_action_DOMNodeInserted_cb(struct dom_event *evt, void *pw)
 			}
 		}
 	}
+
+	/* the document now has a node the box tree does not */
+	html_schedule_reflow(htmlc);
+
 	dom_node_unref(node);
 }
 
@@ -744,6 +748,12 @@ dom_default_action_DOMSubtreeModified_cb(struct dom_event *evt, void *pw)
 				break;
 			}
 		}
+
+		/* a removal, an attribute change or a text change; any of
+		 * them can alter layout
+		 */
+		html_schedule_reflow(htmlc);
+
 		dom_node_unref(node);
 	}
 }

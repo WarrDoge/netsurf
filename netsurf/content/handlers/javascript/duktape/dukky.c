@@ -52,6 +52,7 @@
 #define EVENT_LISTENER_JS_MAGIC MAGIC(EVENT_LISTENER_JS_MAP)
 #define GENERICS_MAGIC MAGIC(GENERICS_TABLE)
 #define THREAD_MAP MAGIC(THREAD_MAP)
+#define MICROTASK_MAGIC MAGIC(MICROTASK_DRAIN)
 
 /**
  * dukky javascript heap
@@ -712,7 +713,56 @@ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **th
 		js_destroythread(ret);
 		return NSERROR_INIT_FAILED;
 	}
-	/* ..., result */
+	/* ..., polyfill exports */
+
+	/* Install the polyfill's exports from here: the file is evaluated as
+	 * an eval program, so neither its var bindings nor its this-binding
+	 * reach the Window that page scripts resolve names against.
+	 */
+
+	/* The microtask drain is stashed where page script cannot reach it */
+	duk_get_prop_string(CTX, -1, "drain");
+	/* ..., exports, drain */
+	duk_put_global_string(CTX, MICROTASK_MAGIC);
+	/* ..., exports */
+
+	/* The rest are ordinary globals, installed by asking the polyfill for
+	 * them with the Window in hand so that it can use the timer.
+	 */
+	duk_get_prop_string(CTX, -1, "install");
+	/* ..., exports, install */
+	duk_push_global_object(CTX);
+	/* ..., exports, install, Win */
+	if (dukky_pcall(CTX, 1, true) != 0) {
+		NSLOG(dukky, CRITICAL,
+		      "Unable to install polyfills, thread aborted");
+		js_destroythread(ret);
+		return NSERROR_INIT_FAILED;
+	}
+	/* ..., exports, globals */
+	duk_push_global_object(CTX);
+	/* ..., exports, globals, Win */
+	duk_enum(CTX, -2, DUK_ENUM_OWN_PROPERTIES_ONLY);
+	/* ..., exports, globals, Win, enum */
+	while (duk_next(CTX, -1, 1)) {
+		/* ..., exports, globals, Win, enum, key, value */
+
+		/* Defined rather than assigned: the Window prototype carries
+		 * accessors with no setter for some of these names, and an
+		 * assignment would throw rather than replace them.
+		 */
+		duk_def_prop(CTX, -4,
+			     DUK_DEFPROP_HAVE_VALUE |
+			     DUK_DEFPROP_HAVE_WRITABLE |
+			     DUK_DEFPROP_WRITABLE |
+			     DUK_DEFPROP_HAVE_ENUMERABLE |
+			     DUK_DEFPROP_HAVE_CONFIGURABLE |
+			     DUK_DEFPROP_CONFIGURABLE |
+			     DUK_DEFPROP_FORCE);
+		/* ..., exports, globals, Win, enum */
+	}
+	duk_pop_3(CTX);
+	/* ..., exports */
 	duk_pop(CTX);
 	/* ... */
 
@@ -917,6 +967,22 @@ void dukky_log_stack_frame(duk_context *ctx, const char * reason)
 }
 
 
+/* exported interface documented in dukky.h */
+void dukky_run_microtasks(duk_context *ctx)
+{
+	duk_idx_t top = duk_get_top(ctx);
+
+	duk_get_global_string(ctx, MICROTASK_MAGIC);
+	if (duk_is_callable(ctx, -1)) {
+		if (duk_pcall(ctx, 0) != DUK_EXEC_SUCCESS) {
+			dukky_dump_error(ctx);
+		}
+	}
+
+	duk_set_top(ctx, top);
+}
+
+
 /* exported interface documented in js.h */
 bool
 js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *name)
@@ -967,6 +1033,7 @@ js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *name)
 handle_error:
 	dukky_dump_error(CTX);
 out:
+	dukky_run_microtasks(CTX);
 	dukky_leave_thread(thread);
 	return ret;
 }
@@ -1337,6 +1404,7 @@ handle_extras:
 	duk_pop_2(ctx);
 out:
 	/* ... */
+	dukky_run_microtasks(ctx);
 	dom_node_unref(targ);
 	dom_string_unref(name);
 }
@@ -1668,6 +1736,7 @@ bool js_fire_event(jsthread *thread, const char *type, struct dom_document *doc,
 
 		duk_pop_n(CTX, 6);
 		/* ... */
+		dukky_run_microtasks(CTX);
 		js_event_cleanup(thread, evt);
 		dom_event_unref(evt);
 		dukky_leave_thread(thread);
@@ -1676,6 +1745,7 @@ bool js_fire_event(jsthread *thread, const char *type, struct dom_document *doc,
 	/* ... result */
 	duk_pop(CTX);
 	/* ... */
+	dukky_run_microtasks(CTX);
 	js_event_cleanup(thread, evt);
 	dom_event_unref(evt);
 	dukky_leave_thread(thread);

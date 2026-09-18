@@ -43,6 +43,7 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("namespace"),
 	SMAP("font-face"),
 	SMAP("page"),
+	SMAP("supports"),
 
 	SMAP("aural"),
 	SMAP("braille"),
@@ -163,6 +164,7 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("font-style"),
 	SMAP("font-variant"),
 	SMAP("font-weight"),
+	SMAP("gap"),
 	SMAP("height"),
 	SMAP("justify-content"),
 	SMAP("left"),
@@ -209,6 +211,7 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("quotes"),
 	SMAP("richness"),
 	SMAP("right"),
+	SMAP("row-gap"),
 	SMAP("speak-header"),
 	SMAP("speak-numeral"),
 	SMAP("speak-punctuation"),
@@ -641,7 +644,9 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("white"),
 	SMAP("whitesmoke"),
 	SMAP("yellow"),
-	SMAP("yellowgreen")
+	SMAP("yellowgreen"),
+
+	SMAP("var")
 };
 
 

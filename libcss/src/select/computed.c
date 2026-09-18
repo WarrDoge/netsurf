@@ -73,7 +73,7 @@ css_error css__computed_style_create(css_computed_style **result)
 	if (result == NULL)
 		return CSS_BADPARM;
 
-	s = calloc(sizeof(css_computed_style), 1);
+	s = calloc(1, sizeof(css_computed_style));
 	if (s == NULL)
 		return CSS_NOMEM;
 
@@ -877,6 +877,12 @@ uint8_t css_computed_column_gap(const css_computed_style *style,
 	return get_column_gap(style, length, unit);
 }
 
+uint8_t css_computed_row_gap(const css_computed_style *style,
+		css_fixed *length, css_unit *unit)
+{
+	return get_row_gap(style, length, unit);
+}
+
 uint8_t css_computed_column_rule_color(const css_computed_style *style,
 		css_color *color)
 {
@@ -1352,6 +1358,14 @@ css_error css__compute_absolute_values(const css_computed_style *parent,
 			&ex_size.data.length,
 			get_column_gap,
 			set_column_gap);
+	if (error != CSS_OK)
+		return error;
+
+	/* Fix up row-gap */
+	error = compute_absolute_length(style,
+			&ex_size.data.length,
+			get_row_gap,
+			set_row_gap);
 	if (error != CSS_OK)
 		return error;
 

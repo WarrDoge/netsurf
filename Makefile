@@ -2,19 +2,15 @@
 #
 # NetSurf Source makefile for libraries and browser
 #
-# The TARGET variable changes what toolkit is built for valid values are:
-#  gtk2 (default if unset)
-#  gtk3
-#  riscos
-#  framebuffer
-#  amiga
-#  cocoa
-#  atari
+# This tree is pruned to the framebuffer target only.
 #
-# The HOST variable controls the targetted ABI and not all toolkits build with
-#  all ABI e.g TARGET=riscos must be paired with HOST=arm-unknown-riscos 
-# The default is to use the BUILD variable contents which in turn defaults to
-#  the current cc default ABI target
+# The TARGET variable changes what toolkit is built for valid values are:
+#  framebuffer (default if unset)
+#  monkey (headless test driver)
+#
+# The HOST variable controls the targetted ABI. The default is to use the
+#  BUILD variable contents which in turn defaults to the current cc default
+#  ABI target
 
 # Component settings
 COMPONENT := netsurf-all
@@ -29,17 +25,15 @@ NETSURF_TARG := netsurf
 NSGENBIND_TARG := nsgenbind
 
 # Library targets
-NSLIB_ALL_TARG := buildsystem libnslog libwapcaplet libparserutils libcss libhubbub libdom libnsbmp libnsgif librosprite libnsutils libutf8proc libnspsl
+NSLIB_ALL_TARG := buildsystem libnslog libwapcaplet libparserutils libcss libhubbub libdom libnsbmp libnsgif libnsutils libutf8proc libnspsl
 
 NSLIB_SVGTINY_TARG := libsvgtiny
 
 NSLIB_FB_TARG := libnsfb
 
-NSLIB_RO_TARG := librufl libpencil
-
 
 # Build Environment
-export TARGET ?= gtk2
+export TARGET ?= framebuffer
 TMP_PREFIX := $(CURDIR)/inst-$(TARGET)
 export PKG_CONFIG_PATH := $(TMP_PREFIX)/lib/pkgconfig:$(PKG_CONFIG_PATH)
 export PATH := $(PATH):$(TMP_PREFIX)/bin/
@@ -60,33 +54,8 @@ endif
 
 
 # only build what we require for the target
-ifeq ($(TARGET),riscos)
-  NSLIB_TARG := $(NSLIB_ALL_TARG) $(NSLIB_SVGTINY_TARG) $(NSLIB_RO_TARG)
-  NSBUILD_TARG := $(NSGENBIND_TARG)
-else
-  ifeq ($(TARGET),framebuffer)
-    NSLIB_TARG := $(NSLIB_ALL_TARG) $(NSLIB_SVGTINY_TARG)  $(NSLIB_FB_TARG)
-    NSBUILD_TARG := $(NSGENBIND_TARG)
-  else
-    ifeq ($(TARGET),amiga)
-      NSLIB_TARG := $(NSLIB_ALL_TARG) $(NSLIB_SVGTINY_TARG)
-      NSBUILD_TARG := $(NSGENBIND_TARG)
-    else
-      ifeq ($(TARGET),cocoa)
-        NSLIB_TARG := $(NSLIB_ALL_TARG) $(NSLIB_SVGTINY_TARG) 
-        NSBUILD_TARG := $(NSGENBIND_TARG)
-      else
-        ifeq ($(TARGET),atari)
-          NSLIB_TARG := $(NSLIB_ALL_TARG)
-          NSBUILD_TARG := $(NSGENBIND_TARG)
-        else
-          NSLIB_TARG := $(NSLIB_ALL_TARG) $(NSLIB_SVGTINY_TARG) 
-          NSBUILD_TARG := $(NSGENBIND_TARG)
-        endif
-      endif
-    endif
-  endif
-endif
+NSLIB_TARG := $(NSLIB_ALL_TARG) $(NSLIB_SVGTINY_TARG) $(NSLIB_FB_TARG)
+NSBUILD_TARG := $(NSGENBIND_TARG)
 
 .PHONY: build install clean checkout-release checkout-head dist dist-head
 
@@ -138,12 +107,12 @@ clean:
 	$(MAKE) clean --directory=$(NETSURF_TARG) TARGET=$(TARGET)
 
 # check out last release tag on each submodule
-checkout-release: $(NSLIB_TARG) $(NETSURF_TARG) $(NSGENBIND_TARG) $(NSLIB_FB_TARG) $(NSLIB_SVGTINY_TARG) $(NSLIB_RO_TARG)
+checkout-release: $(NSLIB_TARG) $(NETSURF_TARG) $(NSGENBIND_TARG)
 	git fetch --recurse-submodules
 	for x in $^; do cd $$x; (git checkout origin/HEAD && git checkout $$(git describe --abbrev=0 --match="release/*" )); cd ..; done
 
 # check out head on each submodule
-checkout-head: $(NSLIB_TARG) $(NETSURF_TARG) $(NSGENBIND_TARG) $(NSLIB_FB_TARG) $(NSLIB_SVGTINY_TARG) $(NSLIB_RO_TARG)
+checkout-head: $(NSLIB_TARG) $(NETSURF_TARG) $(NSGENBIND_TARG)
 	git submodule init
 	git submodule update
 	git fetch --recurse-submodules

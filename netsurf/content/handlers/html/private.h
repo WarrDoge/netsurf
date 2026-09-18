@@ -170,6 +170,18 @@ typedef struct html_content {
 	struct content_html_object *object_list;
 	/** Forms, in reverse order to document. */
 	struct form *forms;
+	/** Box tree a reflow is replacing. Kept alive and drawable until the
+	 * replacement is published, because the conversion is incremental. */
+	struct {
+		bool active;
+		int *bctx;
+		struct content_html_object *object_list;
+		unsigned int num_objects;
+		struct form *forms;
+	} reflow_old;
+	/** Element that held the caret when a reflow started, so typing can
+	 * carry on into the box that replaces it. */
+	struct dom_node *reflow_focus;
 	/** Hash table of imagemaps. */
 	struct imagemap **imagemaps;
 
@@ -292,6 +304,16 @@ bool html_saw_insecure_scripts(html_content *htmlc);
  * Complete the HTML content state machine *iff* all scripts are finished
  */
 nserror html_proceed_to_done(html_content *html);
+
+/**
+ * Schedule a rebuild of the box tree from the current DOM.
+ *
+ * Call after a DOM mutation that can change layout. Repeated calls before
+ * the rebuild runs collapse into one.
+ *
+ * \param html The html content whose DOM changed.
+ */
+void html_schedule_reflow(html_content *html);
 
 
 /* in html/redraw.c */

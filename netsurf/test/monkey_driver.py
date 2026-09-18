@@ -254,6 +254,15 @@ def run_test_step_action_window_close(ctx, step):
     assert not win.alive
 
 
+def subst_paths(text):
+    """Expand ${CWD} to the absolute directory the driver was started from.
+
+    Test fixtures live in the source tree, so any file: URL naming one has to
+    be built at run time rather than hardcoded.
+    """
+    return text.replace("${CWD}", os.getcwd())
+
+
 def run_test_step_action_navigate(ctx, step):
     print(get_indent(ctx) + "Action: " + step["action"])
     assert_browser(ctx)
@@ -267,6 +276,7 @@ def run_test_step_action_navigate(ctx, step):
     else:
         url = None
     assert url is not None
+    url = subst_paths(url)
     tag = step['window']
     print(get_indent(ctx) + "        " + tag + " --> " + url)
     win = ctx['windows'].get(tag)
@@ -578,7 +588,7 @@ def run_test_step_action_js_exec(ctx, step):
     print(get_indent(ctx) + "Action: " + step["action"])
     assert_browser(ctx)
     tag = step['window']
-    cmd = step['cmd']
+    cmd = subst_paths(step['cmd'])
     print(get_indent(ctx) + "        " + tag + " Run " + cmd)
     win = ctx['windows'].get(tag)
     assert win is not None

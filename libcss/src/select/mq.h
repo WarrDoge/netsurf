@@ -259,10 +259,21 @@ static inline bool mq_rule_good_for_media(
 		const css_rule_media *m = (const css_rule_media *) ancestor;
 
 		if (ancestor->type == CSS_RULE_MEDIA) {
-			applies = mq__list_match(m->media,
-					unit_ctx, media, str);
-			if (applies == false) {
+			if (m->supported == false) {
+				/* an @supports group whose condition failed */
+				applies = false;
 				break;
+			}
+
+			/* a NULL query list is a group that applies to every
+			 * medium, which is what an @supports rule carries
+			 */
+			if (m->media != NULL) {
+				applies = mq__list_match(m->media,
+						unit_ctx, media, str);
+				if (applies == false) {
+					break;
+				}
 			}
 		}
 

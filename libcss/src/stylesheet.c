@@ -1085,6 +1085,8 @@ css_error css__stylesheet_rule_create(css_stylesheet *sheet, css_rule_type type,
 	case CSS_RULE_PAGE:
 		required = sizeof(css_rule_page);
 		break;
+	default:
+		return CSS_BADPARM;
 	}
 
 	r = malloc(required);
@@ -1094,6 +1096,11 @@ css_error css__stylesheet_rule_create(css_stylesheet *sheet, css_rule_type type,
 	memset(r, 0, required);
 
 	r->type = type;
+
+	if (type == CSS_RULE_MEDIA) {
+		/* only @supports ever clears this */
+		((css_rule_media *) r)->supported = true;
+	}
 
 	*rule = r;
 
