@@ -123,6 +123,37 @@ static void vt_acquire_handler(int sig)
 	vt_acquire_requested = 1;
 }
 
+/* A killed process cannot restore the console from its own teardown, so the
+ * owning surface is reachable from a signal handler. Without this a SIGTERM
+ * leaves the VT in KD_GRAPHICS with VT_PROCESS set, which blanks that console
+ * and hangs the next switch away from it.
+ */
+static struct lnx_priv *vt_owner;
+
+static const int vt_fatal_signals[] = {
+	SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGABRT,
+	SIGFPE, SIGBUS, SIGSEGV, SIGTERM
+};
+
+#define VT_FATAL_SIGNAL_COUNT \
+	(int)(sizeof(vt_fatal_signals) / sizeof(vt_fatal_signals[0]))
+
+static void vt_fatal_handler(int sig)
+{
+	struct sigaction sa;
+
+	if (vt_owner != NULL) {
+		ioctl(vt_owner->tty_fd, KDSETMODE, vt_owner->saved_kd_mode);
+		ioctl(vt_owner->tty_fd, VT_SETMODE, &vt_owner->saved_vt_mode);
+		vt_owner = NULL;
+	}
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = SIG_DFL;
+	sigaction(sig, &sa, NULL);
+	raise(sig);
+}
+
 /** evdev code to libnsfb keycode.
  *
  * The NSFB_KEY_* values follow SDL 1.2 keysyms, which are the unshifted
@@ -380,6 +411,7 @@ static void linux_vt_claim(struct lnx_priv *lstate)
 	struct vt_stat vtstat;
 	struct vt_mode vtmode;
 	struct sigaction sa;
+	int i;
 
 	lstate->tty_fd = open("/dev/tty", O_RDWR | O_CLOEXEC);
 	if (lstate->tty_fd < 0) {
@@ -428,6 +460,19 @@ static void linux_vt_claim(struct lnx_priv *lstate)
 		return;
 	}
 
+	vt_owner = lstate;
+	sa.sa_handler = vt_fatal_handler;
+	for (i = 0; i < VT_FATAL_SIGNAL_COUNT; i++) {
+		struct sigaction old;
+
+		/* respect a disposition the caller deliberately set */
+		if ((sigaction(vt_fatal_signals[i], NULL, &old) == 0) &&
+		    (old.sa_handler == SIG_IGN)) {
+			continue;
+		}
+		sigaction(vt_fatal_signals[i], &sa, NULL);
+	}
+
 	lstate->vt_owned = true;
 }
 
@@ -435,6 +480,7 @@ static void linux_vt_claim(struct lnx_priv *lstate)
 static void linux_vt_release(struct lnx_priv *lstate)
 {
 	struct sigaction sa;
+	int i;
 
 	if (lstate->tty_fd < 0) {
 		return;
@@ -448,7 +494,11 @@ static void linux_vt_release(struct lnx_priv *lstate)
 		sa.sa_handler = SIG_DFL;
 		sigaction(SIGUSR1, &sa, NULL);
 		sigaction(SIGUSR2, &sa, NULL);
+		for (i = 0; i < VT_FATAL_SIGNAL_COUNT; i++) {
+			sigaction(vt_fatal_signals[i], &sa, NULL);
+		}
 
+		vt_owner = NULL;
 		lstate->vt_owned = false;
 	}
 
