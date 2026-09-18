@@ -40,6 +40,10 @@ static css_error handleStartRuleset(css_language *c,
 		const parserutils_vector *vector);
 static css_error handleEndRuleset(css_language *c,
 		const parserutils_vector *vector);
+static css_error parseSupportsCondition(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx, bool *result);
+static css_error parseSupportsInParens(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx, bool *result);
 static css_error handleStartAtRule(css_language *c,
 		const parserutils_vector *vector);
 static css_error handleEndAtRule(css_language *c,
@@ -347,6 +351,272 @@ css_error handleEndRuleset(css_language *c, const parserutils_vector *vector)
 	return CSS_OK;
 }
 
+/**
+ * Test whether a declaration inside an @supports condition is understood.
+ *
+ * A property is supported exactly when the normal declaration parser
+ * accepts it, so run the real handler over the declaration's own tokens and
+ * throw the resulting style away.
+ *
+ * \param c	  Parsing context
+ * \param vector  Vector of tokens to process
+ * \param start	  Index of the first token inside the parentheses
+ * \param end	  Index of the closing parenthesis
+ * \return true if the declaration would be accepted
+ */
+static bool supportsDeclaration(css_language *c,
+		const parserutils_vector *vector, int32_t start, int32_t end)
+{
+	parserutils_vector *value = NULL;
+	const css_token *token;
+	css_style *style = NULL;
+	css_prop_handler handler;
+	int32_t ctx = start;
+	int32_t i;
+	int prop;
+	bool supported = false;
+
+	consumeWhitespace(vector, &ctx);
+
+	token = parserutils_vector_iterate(vector, &ctx);
+	if (token == NULL || token->type != CSS_TOKEN_IDENT) {
+		return false;
+	}
+
+	/** \todo share this search with parseProperty */
+	for (prop = FIRST_PROP; prop <= LAST_PROP; prop++) {
+		bool match = false;
+
+		if (lwc_string_caseless_isequal(token->idata, c->strings[prop],
+				&match) == lwc_error_ok && match)
+			break;
+	}
+	if (prop == LAST_PROP + 1) {
+		return false;
+	}
+
+	consumeWhitespace(vector, &ctx);
+
+	token = parserutils_vector_iterate(vector, &ctx);
+	if (tokenIsChar(token, ':') == false) {
+		return false;
+	}
+
+	/* the handlers are called with the value, not the whitespace
+	 * separating it from the colon
+	 */
+	consumeWhitespace(vector, &ctx);
+
+	if (ctx >= end) {
+		return false; /* no value */
+	}
+
+	/* the handler expects a vector holding only the value, so copy the
+	 * tokens out; they stay owned by the caller's vector
+	 */
+	if (parserutils_vector_create(sizeof(css_token), end - ctx,
+			&value) != PARSERUTILS_OK) {
+		return false;
+	}
+
+	for (i = ctx; i < end; i++) {
+		token = parserutils_vector_peek(vector, i);
+		if (parserutils_vector_append(value,
+				(void *) token) != PARSERUTILS_OK) {
+			parserutils_vector_destroy(value);
+			return false;
+		}
+	}
+
+	if (css__stylesheet_style_create(c->sheet, &style) == CSS_OK) {
+		int32_t vctx = 0;
+
+		handler = property_handlers[prop - FIRST_PROP];
+
+		if (handler(c, value, &vctx, style) == CSS_OK) {
+			consumeWhitespace(value, &vctx);
+			supported = (parserutils_vector_peek(value, vctx) ==
+					NULL);
+		}
+
+		css__stylesheet_style_destroy(style);
+	}
+
+	parserutils_vector_destroy(value);
+
+	return supported;
+}
+
+
+/**
+ * Parse one parenthesised term of an @supports condition.
+ *
+ * The term is either a nested condition, a declaration to test, or
+ * something the specification calls general_enclosed, which is anything
+ * else and always counts as unsupported rather than as a parse error.
+ */
+static css_error parseSupportsInParens(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx, bool *result)
+{
+	const css_token *token;
+	int32_t depth = 1;
+	int32_t start;
+	int32_t end;
+	bool match = false;
+	bool nested;
+
+	consumeWhitespace(vector, ctx);
+
+	token = parserutils_vector_iterate(vector, ctx);
+	if (token == NULL) {
+		return CSS_INVALID;
+	}
+
+	if (token->type != CSS_TOKEN_FUNCTION &&
+			tokenIsChar(token, '(') == false) {
+		return CSS_INVALID;
+	}
+
+	start = *ctx;
+
+	for (end = start; ; end++) {
+		token = parserutils_vector_peek(vector, end);
+		if (token == NULL) {
+			return CSS_INVALID; /* unbalanced */
+		}
+
+		if (token->type == CSS_TOKEN_FUNCTION ||
+				tokenIsChar(token, '(')) {
+			depth++;
+		} else if (tokenIsChar(token, ')')) {
+			if (--depth == 0)
+				break;
+		}
+	}
+
+	/* a nested condition opens with a parenthesis or the not operator;
+	 * anything else can only be a declaration
+	 */
+	nested = false;
+	{
+		int32_t peek = start;
+
+		consumeWhitespace(vector, &peek);
+		token = parserutils_vector_peek(vector, peek);
+
+		if (token != NULL) {
+			if (tokenIsChar(token, '(')) {
+				nested = true;
+			} else if (token->type == CSS_TOKEN_IDENT &&
+					lwc_string_caseless_isequal(
+						token->idata, c->strings[NOT],
+						&match) == lwc_error_ok &&
+					match) {
+				nested = true;
+			}
+		}
+	}
+
+	if (nested) {
+		int32_t inner = start;
+		css_error error;
+
+		error = parseSupportsCondition(c, vector, &inner, result);
+		if (error != CSS_OK) {
+			return error;
+		}
+	} else {
+		*result = supportsDeclaration(c, vector, start, end);
+	}
+
+	*ctx = end + 1;
+
+	return CSS_OK;
+}
+
+
+/**
+ * Parse and evaluate an @supports condition.
+ *
+ * The result is fixed for the life of the stylesheet, so the condition is
+ * reduced to a boolean here rather than being kept for selection time.
+ */
+static css_error parseSupportsCondition(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx, bool *result)
+{
+	const css_token *token;
+	css_error error;
+	bool match = false;
+	bool value;
+
+	consumeWhitespace(vector, ctx);
+
+	token = parserutils_vector_peek(vector, *ctx);
+	if (token == NULL) {
+		return CSS_INVALID;
+	}
+
+	if (token->type == CSS_TOKEN_IDENT &&
+			lwc_string_caseless_isequal(token->idata,
+				c->strings[NOT], &match) == lwc_error_ok &&
+			match) {
+		parserutils_vector_iterate(vector, ctx);
+
+		error = parseSupportsInParens(c, vector, ctx, &value);
+		if (error != CSS_OK) {
+			return error;
+		}
+
+		*result = !value;
+
+		return CSS_OK;
+	}
+
+	error = parseSupportsInParens(c, vector, ctx, result);
+	if (error != CSS_OK) {
+		return error;
+	}
+
+	/* The specification forbids mixing and with or at one level without
+	 * parentheses, which makes such a condition invalid rather than
+	 * ambiguous, so folding left over whichever operators appear is a
+	 * legitimate reading of input that is malformed anyway.
+	 */
+	while (true) {
+		bool conjunction;
+
+		consumeWhitespace(vector, ctx);
+
+		token = parserutils_vector_peek(vector, *ctx);
+		if (token == NULL || token->type != CSS_TOKEN_IDENT) {
+			break;
+		}
+
+		if (lwc_string_caseless_isequal(token->idata, c->strings[AND],
+				&match) == lwc_error_ok && match) {
+			conjunction = true;
+		} else if (lwc_string_caseless_isequal(token->idata,
+				c->strings[OR], &match) == lwc_error_ok &&
+				match) {
+			conjunction = false;
+		} else {
+			return CSS_INVALID;
+		}
+
+		parserutils_vector_iterate(vector, ctx);
+
+		error = parseSupportsInParens(c, vector, ctx, &value);
+		if (error != CSS_OK) {
+			return error;
+		}
+
+		*result = conjunction ? (*result && value) : (*result || value);
+	}
+
+	return CSS_OK;
+}
+
+
 css_error handleStartAtRule(css_language *c, const parserutils_vector *vector)
 {
 	parserutils_error perror;
@@ -582,6 +852,40 @@ css_error handleStartAtRule(css_language *c, const parserutils_vector *vector)
 			return error;
 
 		consumeWhitespace(vector, &ctx);
+
+		error = css__stylesheet_add_rule(c->sheet, rule, NULL);
+		if (error != CSS_OK) {
+			css__stylesheet_rule_destroy(c->sheet, rule);
+			return error;
+		}
+
+		/* Rule is now owned by the sheet,
+		 * so no need to destroy it */
+
+		c->state = HAD_RULE;
+	} else if (lwc_string_caseless_isequal(atkeyword->idata,
+			c->strings[SUPPORTS], &match) == lwc_error_ok &&
+			match) {
+		bool supported = false;
+
+		/* any0 = supports condition */
+		error = parseSupportsCondition(c, vector, &ctx, &supported);
+		if (error != CSS_OK)
+			return error;
+
+		consumeWhitespace(vector, &ctx);
+		if (parserutils_vector_peek(vector, ctx) != NULL)
+			return CSS_INVALID; /* trailing junk */
+
+		/* an @supports group is an @media rule over every medium
+		 * whose extra condition was settled at parse time
+		 */
+		error = css__stylesheet_rule_create(c->sheet,
+				CSS_RULE_MEDIA, &rule);
+		if (error != CSS_OK)
+			return error;
+
+		((css_rule_media *) rule)->supported = supported;
 
 		error = css__stylesheet_add_rule(c->sheet, rule, NULL);
 		if (error != CSS_OK) {

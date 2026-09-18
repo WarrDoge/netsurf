@@ -133,7 +133,15 @@ typedef struct css_rule_selector {
 typedef struct css_rule_media {
 	css_rule base;
 
+	/** media query list, or NULL for a group that applies to all media */
 	css_mq_query *media;
+
+	/** false for an @supports group whose condition was not met.
+	 * @supports reuses this rule type because the two differ only in
+	 * their predicate: the grouping, nesting and cascade behaviour is
+	 * identical, and an @supports condition is fixed at parse time.
+	 */
+	bool supported;
 
 	css_rule *first_child;
 	css_rule *last_child;
