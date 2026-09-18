@@ -719,15 +719,49 @@ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **th
 	 * an eval program, so neither its var bindings nor its this-binding
 	 * reach the Window that page scripts resolve names against.
 	 */
-	duk_get_prop_string(CTX, -1, "promise");
-	/* ..., exports, Promise */
-	duk_put_global_string(CTX, "Promise");
-	/* ..., exports */
 
 	/* The microtask drain is stashed where page script cannot reach it */
 	duk_get_prop_string(CTX, -1, "drain");
 	/* ..., exports, drain */
 	duk_put_global_string(CTX, MICROTASK_MAGIC);
+	/* ..., exports */
+
+	/* The rest are ordinary globals, installed by asking the polyfill for
+	 * them with the Window in hand so that it can use the timer.
+	 */
+	duk_get_prop_string(CTX, -1, "install");
+	/* ..., exports, install */
+	duk_push_global_object(CTX);
+	/* ..., exports, install, Win */
+	if (dukky_pcall(CTX, 1, true) != 0) {
+		NSLOG(dukky, CRITICAL,
+		      "Unable to install polyfills, thread aborted");
+		js_destroythread(ret);
+		return NSERROR_INIT_FAILED;
+	}
+	/* ..., exports, globals */
+	duk_push_global_object(CTX);
+	/* ..., exports, globals, Win */
+	duk_enum(CTX, -2, DUK_ENUM_OWN_PROPERTIES_ONLY);
+	/* ..., exports, globals, Win, enum */
+	while (duk_next(CTX, -1, 1)) {
+		/* ..., exports, globals, Win, enum, key, value */
+
+		/* Defined rather than assigned: the Window prototype carries
+		 * accessors with no setter for some of these names, and an
+		 * assignment would throw rather than replace them.
+		 */
+		duk_def_prop(CTX, -4,
+			     DUK_DEFPROP_HAVE_VALUE |
+			     DUK_DEFPROP_HAVE_WRITABLE |
+			     DUK_DEFPROP_WRITABLE |
+			     DUK_DEFPROP_HAVE_ENUMERABLE |
+			     DUK_DEFPROP_HAVE_CONFIGURABLE |
+			     DUK_DEFPROP_CONFIGURABLE |
+			     DUK_DEFPROP_FORCE);
+		/* ..., exports, globals, Win, enum */
+	}
+	duk_pop_3(CTX);
 	/* ..., exports */
 	duk_pop(CTX);
 	/* ... */

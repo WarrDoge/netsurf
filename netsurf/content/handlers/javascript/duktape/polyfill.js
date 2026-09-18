@@ -314,12 +314,6 @@ var NetSurfPromiseSupport = (function () {
   return { promise: Promise, drain: drain };
 })();
 
-/* Hand the exports back as this program's completion value. Neither a var
- * binding nor a bare assignment made here reaches the object that page
- * scripts resolve names against, because the file is evaluated as an eval
- * program against the global the Window replaced, so dukky installs them
- * from C instead.
- */
 
 
 /* querySelector, querySelectorAll, matches and closest.
@@ -917,4 +911,124 @@ var NetSurfPromiseSupport = (function () {
   }
 }());
 
-NetSurfPromiseSupport;
+/* Storage, and requestAnimationFrame over the timer.
+ *
+ * Neither is persistent and neither is a real animation clock. What they
+ * give is the shape scripts feature detect for, so a page that stores a
+ * preference or schedules a frame runs instead of dying on a ReferenceError.
+ * Storage is per page load: a reload starts empty, which for the cache-like
+ * use most pages put it to means a miss rather than a wrong answer.
+ *
+ * Making localStorage outlive the page needs a file under the per-user
+ * configuration directory, and that needs a binding rather than a polyfill.
+ */
+var NetSurfHostSupport = (function () {
+  function makeStorage() {
+    var data = {};
+    var storage = {};
+
+    function keys() {
+      var out = [];
+      for (var k in data) {
+        if (Object.prototype.hasOwnProperty.call(data, k)) {
+          out.push(k);
+        }
+      }
+      return out;
+    }
+
+    function resize() {
+      storage.length = keys().length;
+    }
+
+    storage.length = 0;
+
+    storage.getItem = function (key) {
+      key = String(key);
+      return Object.prototype.hasOwnProperty.call(data, key) ?
+              data[key] : null;
+    };
+
+    storage.setItem = function (key, value) {
+      data[String(key)] = String(value);
+      resize();
+    };
+
+    storage.removeItem = function (key) {
+      delete data[String(key)];
+      resize();
+    };
+
+    storage.clear = function () {
+      data = {};
+      resize();
+    };
+
+    storage.key = function (index) {
+      var all = keys();
+      index = Number(index);
+      return (index >= 0 && index < all.length) ? all[index] : null;
+    };
+
+    return storage;
+  }
+
+  /* The frame callback is given a page relative time, as the timestamp is
+   * specified to be, not a wall clock one.
+   */
+  var epoch = Date.now();
+
+  function makeFrameScheduler(win) {
+    var timers = {};
+    var next = 1;
+
+    return {
+      request: function (callback) {
+        var handle = next++;
+        timers[handle] = win.setTimeout(function () {
+          delete timers[handle];
+          callback(Date.now() - epoch);
+        }, 16);
+        return handle;
+      },
+      cancel: function (handle) {
+        if (Object.prototype.hasOwnProperty.call(timers, handle)) {
+          win.clearTimeout(timers[handle]);
+          delete timers[handle];
+        }
+      }
+    };
+  }
+
+  return {
+    makeStorage: makeStorage,
+    makeFrameScheduler: makeFrameScheduler
+  };
+}());
+
+/* Hand the exports back as this program's completion value. Neither a var
+ * binding nor a bare assignment made here reaches the object that page
+ * scripts resolve names against, because the file is evaluated as an eval
+ * program against the global the Window replaced, so dukky installs them
+ * from C instead. install() is handed that object so the polyfill can reach
+ * the timer functions the same way page script does.
+ */
+({
+  drain: NetSurfPromiseSupport.drain,
+
+  install: function (win) {
+    var frames = NetSurfHostSupport.makeFrameScheduler(win);
+
+    return {
+      Promise: NetSurfPromiseSupport.promise,
+      localStorage: NetSurfHostSupport.makeStorage(),
+      sessionStorage: NetSurfHostSupport.makeStorage(),
+      requestAnimationFrame: function (callback) {
+        return frames.request(callback);
+      },
+      cancelAnimationFrame: function (handle) {
+        frames.cancel(handle);
+      }
+    };
+  }
+});
