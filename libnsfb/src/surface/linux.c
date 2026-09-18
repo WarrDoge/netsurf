@@ -884,6 +884,7 @@ linux_set_geometry(nsfb_t *nsfb, int width, int height, enum nsfb_format_e forma
 static void linux_try_mode(struct lnx_priv *lstate, int width, int height, int bpp)
 {
 	struct fb_var_screeninfo want = lstate->var;
+	uint32_t saved_line_length;
 
 	if ((width > 0) && (height > 0)) {
 		want.xres = width;
@@ -906,6 +907,8 @@ static void linux_try_mode(struct lnx_priv *lstate, int width, int height, int b
 
 	want.activate = FB_ACTIVATE_NOW;
 
+	saved_line_length = lstate->fix.line_length;
+
 	if (ioctl(lstate->fd, FBIOPUT_VSCREENINFO, &want) < 0) {
 		return;
 	}
@@ -917,6 +920,21 @@ static void linux_try_mode(struct lnx_priv *lstate, int width, int height, int b
 	 */
 	ioctl(lstate->fd, FBIOGET_VSCREENINFO, &lstate->var);
 	ioctl(lstate->fd, FBIOGET_FSCREENINFO, &lstate->fix);
+
+	/* DRM's fbdev emulation accepts a smaller mode by shrinking the
+	 * visible region without reprogramming the CRTC. The stride stays at
+	 * the panel's, so the page lands in a corner of an otherwise dead
+	 * screen. A real mode change moves the stride with it; when it has not
+	 * moved, take the panel's own mode instead.
+	 */
+	if (((lstate->var.xres < lstate->saved_var.xres) ||
+	     (lstate->var.yres < lstate->saved_var.yres)) &&
+	    (lstate->fix.line_length == saved_line_length)) {
+		ioctl(lstate->fd, FBIOPUT_VSCREENINFO, &lstate->saved_var);
+		ioctl(lstate->fd, FBIOGET_VSCREENINFO, &lstate->var);
+		ioctl(lstate->fd, FBIOGET_FSCREENINFO, &lstate->fix);
+		lstate->var_changed = false;
+	}
 }
 
 
