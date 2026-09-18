@@ -266,6 +266,15 @@ const uint8_t *llcache_handle_get_source_data(const llcache_handle *handle,
 		size_t *size);
 
 /**
+ * Retrieve the HTTP status code a low-level cache object's fetch returned
+ *
+ * \param handle  Handle to retrieve the status from
+ * \return The status code, or 0 where there was none, as for a file or a
+ *         fetch that failed before a response arrived
+ */
+long llcache_handle_get_http_code(const llcache_handle *handle);
+
+/**
  * Retrieve a header value associated with a low-level cache object
  *
  * \param handle  Handle to retrieve header from

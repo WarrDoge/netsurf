@@ -1405,6 +1405,368 @@ var NetSurfHostSupport = (function () {
   };
 }());
 
+
+/* XMLHttpRequest, fetch, FormData and Headers, over the host's fetch.
+ *
+ * The host takes a url, a method, a body and a callback, and answers with
+ * the status, the content type and the body.  Two things follow from that
+ * and are visible here.  A request header cannot be sent -- the cache layer
+ * underneath builds its own -- so setRequestHeader records the value and
+ * nothing more, and a body always goes as form encoding whatever the page
+ * asked for.  And only the content type comes back, so that is the only
+ * response header there is to report.
+ */
+var NetSurfNetworking = (function () {
+  var STATUS_TEXT = {
+    200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
+    301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
+    400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
+    404: 'Not Found', 405: 'Method Not Allowed', 408: 'Request Timeout',
+    410: 'Gone', 500: 'Internal Server Error', 502: 'Bad Gateway',
+    503: 'Service Unavailable', 504: 'Gateway Timeout'
+  };
+
+  function statusText(status) {
+    return STATUS_TEXT[status] || '';
+  }
+
+  /* A fetch of something that is not HTTP, such as a file, carries no
+   * status at all, and having arrived it has succeeded.
+   */
+  function statusIsOk(status) {
+    return status === 0 || (status >= 200 && status < 300);
+  }
+
+  function encode(pairs) {
+    var out = [];
+    var i;
+
+    for (i = 0; i < pairs.length; i++) {
+      out.push(encodeURIComponent(pairs[i][0]) + '=' +
+               encodeURIComponent(pairs[i][1]));
+    }
+
+    return out.join('&');
+  }
+
+  function FormData() {
+    this._entries = [];
+  }
+
+  FormData.prototype.append = function (name, value) {
+    this._entries.push([String(name), String(value)]);
+  };
+
+  FormData.prototype.set = function (name, value) {
+    this['delete'](name);
+    this.append(name, value);
+  };
+
+  FormData.prototype.get = function (name) {
+    var all = this.getAll(name);
+    return all.length > 0 ? all[0] : null;
+  };
+
+  FormData.prototype.getAll = function (name) {
+    var key = String(name);
+    return this._entries.filter(function (e) {
+      return e[0] === key;
+    }).map(function (e) {
+      return e[1];
+    });
+  };
+
+  FormData.prototype.has = function (name) {
+    return this.getAll(name).length > 0;
+  };
+
+  FormData.prototype['delete'] = function (name) {
+    var key = String(name);
+    this._entries = this._entries.filter(function (e) {
+      return e[0] !== key;
+    });
+  };
+
+  FormData.prototype.forEach = function (fn, self) {
+    this._entries.forEach(function (e) {
+      fn.call(self, e[1], e[0], this);
+    }, this);
+  };
+
+  FormData.prototype.toString = function () {
+    return encode(this._entries);
+  };
+
+  function Headers(init) {
+    this._map = {};
+
+    if (init instanceof Headers) {
+      init.forEach(function (value, name) {
+        this.append(name, value);
+      }, this);
+    } else if (init && typeof init === 'object') {
+      Object.keys(init).forEach(function (name) {
+        this.append(name, init[name]);
+      }, this);
+    }
+  }
+
+  Headers.prototype.append = function (name, value) {
+    var key = String(name).toLowerCase();
+    this._map[key] = this._map.hasOwnProperty(key) ?
+      (this._map[key] + ', ' + String(value)) : String(value);
+  };
+
+  Headers.prototype.set = function (name, value) {
+    this._map[String(name).toLowerCase()] = String(value);
+  };
+
+  Headers.prototype.get = function (name) {
+    var key = String(name).toLowerCase();
+    return this._map.hasOwnProperty(key) ? this._map[key] : null;
+  };
+
+  Headers.prototype.has = function (name) {
+    return this._map.hasOwnProperty(String(name).toLowerCase());
+  };
+
+  Headers.prototype['delete'] = function (name) {
+    delete this._map[String(name).toLowerCase()];
+  };
+
+  Headers.prototype.forEach = function (fn, self) {
+    Object.keys(this._map).forEach(function (key) {
+      fn.call(self, this._map[key], key, this);
+    }, this);
+  };
+
+  function bodyText(body) {
+    if (body === undefined || body === null) {
+      return null;
+    }
+    if (typeof body === 'string') {
+      return body;
+    }
+    return String(body);
+  }
+
+  function makeResponse(url, status, type, text) {
+    var headers = new Headers();
+
+    if (type) {
+      headers.set('content-type', type);
+    }
+
+    return {
+      url: url,
+      type: 'basic',
+      status: status,
+      statusText: statusText(status),
+      ok: statusIsOk(status),
+      redirected: false,
+      bodyUsed: false,
+      headers: headers,
+      text: function () {
+        return Promise.resolve(text);
+      },
+      json: function () {
+        return Promise.resolve(text).then(function (t) {
+          return JSON.parse(t);
+        });
+      },
+      clone: function () {
+        return makeResponse(url, status, type, text);
+      }
+    };
+  }
+
+  function makeFetch(host) {
+    return function fetch(input, init) {
+      var options = init || {};
+      var url = (input !== null && typeof input === 'object' &&
+                 typeof input.url === 'string') ? input.url : String(input);
+      var method = String(options.method || 'GET').toUpperCase();
+      var body = bodyText(options.body);
+
+      return new Promise(function (resolve, reject) {
+        var handle = host.fetch(url, method, body,
+          function (ok, status, type, text) {
+            if (!ok) {
+              reject(new TypeError('Failed to fetch ' + url));
+              return;
+            }
+            resolve(makeResponse(url, status, type, text));
+          });
+
+        if (handle === undefined) {
+          reject(new TypeError('Failed to fetch ' + url));
+        }
+      });
+    };
+  }
+
+  function makeXHR(host) {
+    function XMLHttpRequest() {
+      this.readyState = 0;
+      this.status = 0;
+      this.statusText = '';
+      this.responseText = '';
+      this.response = '';
+      this.responseType = '';
+      this.responseURL = '';
+      this.timeout = 0;
+      this.withCredentials = false;
+      this.onreadystatechange = null;
+      this.onload = null;
+      this.onerror = null;
+      this.onabort = null;
+      this.onloadend = null;
+      this._method = 'GET';
+      this._url = '';
+      this._handle = null;
+      this._sentHeaders = {};
+      this._responseType = '';
+      this._listeners = {};
+    }
+
+    function emit(xhr, name) {
+      var event = { type: name, target: xhr, currentTarget: xhr };
+      var handler = xhr['on' + name];
+      var list = xhr._listeners[name];
+
+      if (typeof handler === 'function') {
+        handler.call(xhr, event);
+      }
+
+      if (list !== undefined) {
+        list.slice().forEach(function (fn) {
+          fn.call(xhr, event);
+        });
+      }
+    }
+
+    function setReadyState(xhr, state) {
+      xhr.readyState = state;
+      emit(xhr, 'readystatechange');
+    }
+
+    XMLHttpRequest.prototype.addEventListener = function (name, fn) {
+      var key = String(name);
+      if (this._listeners[key] === undefined) {
+        this._listeners[key] = [];
+      }
+      this._listeners[key].push(fn);
+    };
+
+    XMLHttpRequest.prototype.removeEventListener = function (name, fn) {
+      var list = this._listeners[String(name)];
+      if (list !== undefined) {
+        this._listeners[String(name)] = list.filter(function (f) {
+          return f !== fn;
+        });
+      }
+    };
+
+    XMLHttpRequest.prototype.open = function (method, url) {
+      this._method = String(method).toUpperCase();
+      this._url = String(url);
+      setReadyState(this, 1);
+    };
+
+    /* Recorded and not sent: see the note at the top of this section. */
+    XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+      this._sentHeaders[String(name).toLowerCase()] = String(value);
+    };
+
+    XMLHttpRequest.prototype.getResponseHeader = function (name) {
+      return this._responseType &&
+        String(name).toLowerCase() === 'content-type' ?
+        this._responseType : null;
+    };
+
+    XMLHttpRequest.prototype.getAllResponseHeaders = function () {
+      return this._responseType ?
+        ('content-type: ' + this._responseType + '\r\n') : '';
+    };
+
+    XMLHttpRequest.prototype.send = function (body) {
+      var xhr = this;
+
+      this._handle = host.fetch(this._url, this._method, bodyText(body),
+        function (ok, status, type, text) {
+          xhr._handle = null;
+          xhr.responseURL = xhr._url;
+          xhr._responseType = type;
+          xhr.status = ok ? status : 0;
+          xhr.statusText = ok ? statusText(status) : '';
+          xhr.responseText = text;
+
+          if (xhr.responseType === 'json') {
+            try {
+              xhr.response = JSON.parse(text);
+            } catch (e) {
+              xhr.response = null;
+            }
+          } else {
+            xhr.response = text;
+          }
+
+          setReadyState(xhr, 2);
+          setReadyState(xhr, 3);
+          setReadyState(xhr, 4);
+          emit(xhr, ok ? 'load' : 'error');
+          emit(xhr, 'loadend');
+        });
+
+      if (this._handle === undefined) {
+        this._handle = null;
+        setReadyState(this, 4);
+        emit(this, 'error');
+        emit(this, 'loadend');
+      }
+    };
+
+    XMLHttpRequest.prototype.abort = function () {
+      if (this._handle !== null) {
+        host.abortFetch(this._handle);
+        this._handle = null;
+      }
+      this.readyState = 0;
+      emit(this, 'abort');
+      emit(this, 'loadend');
+    };
+
+    XMLHttpRequest.UNSENT = 0;
+    XMLHttpRequest.OPENED = 1;
+    XMLHttpRequest.HEADERS_RECEIVED = 2;
+    XMLHttpRequest.LOADING = 3;
+    XMLHttpRequest.DONE = 4;
+
+    XMLHttpRequest.prototype.UNSENT = 0;
+    XMLHttpRequest.prototype.OPENED = 1;
+    XMLHttpRequest.prototype.HEADERS_RECEIVED = 2;
+    XMLHttpRequest.prototype.LOADING = 3;
+    XMLHttpRequest.prototype.DONE = 4;
+
+    return XMLHttpRequest;
+  }
+
+  return {
+    install: function (host) {
+      if (host === undefined || typeof host.fetch !== 'function') {
+        return {};
+      }
+
+      return {
+        XMLHttpRequest: makeXHR(host),
+        fetch: makeFetch(host),
+        FormData: FormData,
+        Headers: Headers
+      };
+    }
+  };
+}());
+
 /* Hand the exports back as this program's completion value. Neither a var
  * binding nor a bare assignment made here reaches the object that page
  * scripts resolve names against, because the file is evaluated as an eval
@@ -1415,10 +1777,9 @@ var NetSurfHostSupport = (function () {
 ({
   drain: NetSurfPromiseSupport.drain,
 
-  install: function (win) {
+  install: function (win, host) {
     var frames = NetSurfHostSupport.makeFrameScheduler(win);
-
-    return {
+    var globals = {
       Promise: NetSurfPromiseSupport.promise,
       Map: NetSurfCollections.Map,
       Set: NetSurfCollections.Set,
@@ -1434,5 +1795,12 @@ var NetSurfHostSupport = (function () {
         frames.cancel(handle);
       }
     };
+    var network = NetSurfNetworking.install(host);
+
+    Object.keys(network).forEach(function (name) {
+      globals[name] = network[name];
+    });
+
+    return globals;
   }
 });
