@@ -25,6 +25,7 @@ class Window {
 #include "utils/ring.h"
 #include "netsurf/inttypes.h"
 #include "netsurf/css.h"
+#include "desktop/browser_history.h"
 #include "css/utils.h"
 #include "html/box.h"
 #include <ctype.h>
@@ -249,6 +250,137 @@ static void window_style_build(duk_context *ctx, html_content *htmlc,
 		break;
 	}
 }
+
+/* The viewport, asked for the way layout asks for it.  The content's own
+ * copy is only filled in once it lays out, and script runs before that.
+ */
+static unsigned window_viewport(html_content *htmlc, bool want_width)
+{
+	unsigned w = 0;
+	unsigned h = 0;
+	union content_msg_data msg_data = {
+		.getdims = {
+			.viewport_width = &w,
+			.viewport_height = &h,
+		},
+	};
+
+	content_broadcast(&htmlc->base, CONTENT_MSG_GETDIMS, &msg_data);
+
+	return want_width ? w : h;
+}
+
+
+/* Session history.
+ *
+ * Going back and forward is real.  pushState and replaceState are not: the
+ * history here is built out of navigations, and there is no way to add an
+ * entry for a url the browser never went to, so they record the state object
+ * and leave the address alone.  A page that uses them to decorate navigation
+ * it also does for itself still works; a router that expects the address to
+ * follow does not.
+ */
+
+static struct browser_window *window_history_bw(duk_context *ctx)
+{
+	struct browser_window *bw;
+
+	duk_push_this(ctx);
+	duk_get_prop_string(ctx, -1, MAGIC(HistoryWindow));
+	bw = duk_get_pointer(ctx, -1);
+	duk_pop_2(ctx);
+
+	return bw;
+}
+
+static bool window_history_count(const struct browser_window *bw,
+		int x0, int y0, int x1, int y1,
+		const struct history_entry *entry, void *user_data)
+{
+	int *count = user_data;
+
+	(void)bw;
+	(void)x0;
+	(void)y0;
+	(void)x1;
+	(void)y1;
+	(void)entry;
+	(*count)++;
+
+	return true;
+}
+
+static int window_history_length(struct browser_window *bw)
+{
+	int count = 0;
+
+	if (bw != NULL) {
+		browser_window_history_enumerate(bw, window_history_count,
+				&count);
+	}
+
+	/* The page asking is itself an entry, even before the navigation
+	 * that brought it has been recorded
+	 */
+	return (count > 0) ? count : 1;
+}
+
+static duk_ret_t window_history_back(duk_context *ctx)
+{
+	struct browser_window *bw = window_history_bw(ctx);
+
+	if (bw != NULL) {
+		browser_window_history_back(bw, false);
+	}
+
+	return 0;
+}
+
+static duk_ret_t window_history_forward(duk_context *ctx)
+{
+	struct browser_window *bw = window_history_bw(ctx);
+
+	if (bw != NULL) {
+		browser_window_history_forward(bw, false);
+	}
+
+	return 0;
+}
+
+static duk_ret_t window_history_go(duk_context *ctx)
+{
+	struct browser_window *bw = window_history_bw(ctx);
+	duk_int_t delta = duk_to_int(ctx, 0);
+
+	if (bw == NULL || delta == 0) {
+		return 0;
+	}
+
+	/* One step per call is all the core offers, so a longer jump is
+	 * made of repeats and stops where the history does.
+	 */
+	while (delta < 0 && browser_window_history_back_available(bw)) {
+		browser_window_history_back(bw, false);
+		delta++;
+	}
+	while (delta > 0 && browser_window_history_forward_available(bw)) {
+		browser_window_history_forward(bw, false);
+		delta--;
+	}
+
+	return 0;
+}
+
+static duk_ret_t window_history_push_state(duk_context *ctx)
+{
+	duk_push_this(ctx);
+	duk_dup(ctx, 0);
+	duk_put_prop_string(ctx, -2, "state");
+	duk_pop(ctx);
+
+	return 0;
+}
+
 
 static duk_ret_t window_style_get_property_value(duk_context *ctx)
 {
@@ -700,6 +832,66 @@ method Window::getComputedStyle()
 
 	duk_push_c_function(ctx, window_style_get_property_value, 1);
 	duk_put_prop_string(ctx, -2, "getPropertyValue");
+
+	return 1;
+%}
+
+getter Window::innerWidth()
+%{
+	duk_push_int(ctx, (duk_int_t)window_viewport(priv->htmlc, true));
+	return 1;
+%}
+
+getter Window::innerHeight()
+%{
+	duk_push_int(ctx, (duk_int_t)window_viewport(priv->htmlc, false));
+	return 1;
+%}
+
+getter Window::devicePixelRatio()
+%{
+	duk_push_number(ctx, (double)browser_window_get_scale(priv->win));
+	return 1;
+%}
+
+getter Window::history()
+%{
+	/* One object per window, because pushState records its state on it
+	 * and a fresh one each time would lose it
+	 */
+	duk_push_this(ctx);
+	duk_get_prop_string(ctx, -1, MAGIC(History));
+	if (!duk_is_undefined(ctx, -1)) {
+		return 1;
+	}
+	duk_pop_2(ctx);
+
+	duk_push_object(ctx);
+
+	duk_push_pointer(ctx, priv->win);
+	duk_put_prop_string(ctx, -2, MAGIC(HistoryWindow));
+
+	duk_push_c_function(ctx, window_history_back, 0);
+	duk_put_prop_string(ctx, -2, "back");
+	duk_push_c_function(ctx, window_history_forward, 0);
+	duk_put_prop_string(ctx, -2, "forward");
+	duk_push_c_function(ctx, window_history_go, 1);
+	duk_put_prop_string(ctx, -2, "go");
+	duk_push_c_function(ctx, window_history_push_state, 3);
+	duk_put_prop_string(ctx, -2, "pushState");
+	duk_push_c_function(ctx, window_history_push_state, 3);
+	duk_put_prop_string(ctx, -2, "replaceState");
+
+	duk_push_int(ctx, window_history_length(priv->win));
+	duk_put_prop_string(ctx, -2, "length");
+
+	duk_push_null(ctx);
+	duk_put_prop_string(ctx, -2, "state");
+
+	duk_push_this(ctx);
+	duk_dup(ctx, -2);
+	duk_put_prop_string(ctx, -2, MAGIC(History));
+	duk_pop(ctx);
 
 	return 1;
 %}

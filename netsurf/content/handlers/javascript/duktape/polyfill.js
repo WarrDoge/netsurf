@@ -1767,6 +1767,138 @@ var NetSurfNetworking = (function () {
   };
 }());
 
+
+/* matchMedia and screen, over the viewport the Window reports.
+ *
+ * The features here are the ones pages actually query: the width and height
+ * ranges, orientation, and the colour scheme. Anything else is answered
+ * false rather than guessed at. A list never changes, because there is no
+ * resize event to change it on, so a listener is accepted and never called.
+ */
+var NetSurfMedia = (function () {
+  function colourScheme(host) {
+    return (host !== undefined && typeof host.colourScheme === 'function') ?
+      host.colourScheme() : 'light';
+  }
+
+  function evaluateFeature(win, host, name, value) {
+    var px = parseFloat(value);
+
+    switch (name) {
+    case 'min-width':
+      return win.innerWidth >= px;
+    case 'max-width':
+      return win.innerWidth <= px;
+    case 'width':
+      return win.innerWidth === px;
+    case 'min-height':
+      return win.innerHeight >= px;
+    case 'max-height':
+      return win.innerHeight <= px;
+    case 'height':
+      return win.innerHeight === px;
+    case 'orientation':
+      return value === (win.innerWidth >= win.innerHeight ?
+                        'landscape' : 'portrait');
+    case 'prefers-color-scheme':
+      return value === colourScheme(host);
+    case 'prefers-reduced-motion':
+      return value === 'no-preference';
+    default:
+      return false;
+    }
+  }
+
+  function evaluateClause(win, host, clause) {
+    var text = clause.trim();
+    var colon;
+
+    if (text.length === 0) {
+      return true;
+    }
+
+    if (text.charAt(0) === '(') {
+      text = text.replace(/^\(\s*/, '').replace(/\s*\)$/, '');
+      colon = text.indexOf(':');
+
+      if (colon < 0) {
+        /* a bare feature asks whether it has any value at all */
+        return evaluateFeature(win, host, text.trim(), '') !== false;
+      }
+
+      return evaluateFeature(win, host, text.slice(0, colon).trim(),
+                             text.slice(colon + 1).trim());
+    }
+
+    /* a media type: this is a screen, and nothing else */
+    return text === 'screen' || text === 'all';
+  }
+
+  function evaluateQuery(win, host, query) {
+    return String(query).split(',').some(function (alternative) {
+      var negated = false;
+      var text = alternative.trim();
+      var result;
+
+      if (/^not\s+/.test(text)) {
+        negated = true;
+        text = text.replace(/^not\s+/, '');
+      }
+
+      result = text.split(/\s+and\s+/).every(function (clause) {
+        return evaluateClause(win, host, clause);
+      });
+
+      return negated ? !result : result;
+    });
+  }
+
+  function makeMatchMedia(win, host) {
+    return function matchMedia(query) {
+      var text = String(query);
+
+      return {
+        media: text,
+        matches: evaluateQuery(win, host, text),
+        onchange: null,
+        addListener: function () {},
+        removeListener: function () {},
+        addEventListener: function () {},
+        removeEventListener: function () {},
+        dispatchEvent: function () { return false; }
+      };
+    };
+  }
+
+  function makeScreen(win) {
+    var screen = {};
+
+    ['width', 'availWidth'].forEach(function (name) {
+      Object.defineProperty(screen, name, {
+        get: function () { return win.innerWidth; },
+        enumerable: true
+      });
+    });
+
+    ['height', 'availHeight'].forEach(function (name) {
+      Object.defineProperty(screen, name, {
+        get: function () { return win.innerHeight; },
+        enumerable: true
+      });
+    });
+
+    screen.colorDepth = 24;
+    screen.pixelDepth = 24;
+
+    return screen;
+  }
+
+  return {
+    makeMatchMedia: makeMatchMedia,
+    makeScreen: makeScreen
+  };
+}());
+
 /* Hand the exports back as this program's completion value. Neither a var
  * binding nor a bare assignment made here reaches the object that page
  * scripts resolve names against, because the file is evaluated as an eval
@@ -1795,6 +1927,9 @@ var NetSurfNetworking = (function () {
         frames.cancel(handle);
       }
     };
+    globals.matchMedia = NetSurfMedia.makeMatchMedia(win, host);
+    globals.screen = NetSurfMedia.makeScreen(win);
+
     var network = NetSurfNetworking.install(host);
 
     Object.keys(network).forEach(function (name) {

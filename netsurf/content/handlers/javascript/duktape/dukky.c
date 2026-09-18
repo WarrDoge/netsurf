@@ -656,6 +656,7 @@ void js_destroyheap(jsheap *heap)
 /* Defined below, with the rest of the script fetch machinery */
 static duk_ret_t dukky_host_fetch(duk_context *ctx);
 static duk_ret_t dukky_host_fetch_abort(duk_context *ctx);
+static duk_ret_t dukky_host_colour_scheme(duk_context *ctx);
 
 nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **thread)
 {
@@ -760,6 +761,8 @@ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **th
 	duk_put_prop_string(CTX, -2, "fetch");
 	duk_push_c_function(CTX, dukky_host_fetch_abort, 1);
 	duk_put_prop_string(CTX, -2, "abortFetch");
+	duk_push_c_function(CTX, dukky_host_colour_scheme, 0);
+	duk_put_prop_string(CTX, -2, "colourScheme");
 	/* ..., exports, install, Win, host */
 
 	if (dukky_pcall(CTX, 2, true) != 0) {
@@ -1069,6 +1072,29 @@ static duk_ret_t dukky_host_fetch(duk_context *ctx)
 	}
 
 	duk_push_int(ctx, fetch->handle);
+	return 1;
+}
+
+
+/**
+ * The colour scheme the page is being rendered for.
+ */
+static duk_ret_t dukky_host_colour_scheme(duk_context *ctx)
+{
+	html_content *htmlc;
+
+	duk_get_global_string(ctx, HTMLC_MAGIC);
+	htmlc = duk_get_pointer(ctx, -1);
+	duk_pop(ctx);
+
+	if ((htmlc != NULL) && (htmlc->media.prefers_color_scheme != NULL)) {
+		duk_push_lstring(ctx,
+			lwc_string_data(htmlc->media.prefers_color_scheme),
+			lwc_string_length(htmlc->media.prefers_color_scheme));
+	} else {
+		duk_push_string(ctx, "light");
+	}
+
 	return 1;
 }
 

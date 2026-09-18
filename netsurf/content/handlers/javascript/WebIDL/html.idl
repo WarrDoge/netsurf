@@ -1394,6 +1394,13 @@ dictionary DragEventInit : MouseEventInit {
   attribute DOMString name;
   [PutForwards=href, Unforgeable] readonly attribute Location location;
   readonly attribute History history;
+  /* The viewport, which the CSSOM view spec puts on Window and this
+   * WebIDL predates.  matchMedia and screen are built on these in
+   * polyfill.js, so they are not declared here.
+   */
+  readonly attribute long innerWidth;
+  readonly attribute long innerHeight;
+  readonly attribute double devicePixelRatio;
   [Replaceable] readonly attribute BarProp locationbar;
   [Replaceable] readonly attribute BarProp menubar;
   [Replaceable] readonly attribute BarProp personalbar;
