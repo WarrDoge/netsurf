@@ -42,7 +42,13 @@
 char *strndup(const char *s, size_t n);
 #endif
 
+/* glibc guards strcasestr with __USE_MISC, which _DEFAULT_SOURCE and
+ * _BSD_SOURCE both enable, so testing _GNU_SOURCE alone redeclares it.
+ */
 #if ((defined(_GNU_SOURCE) ||			\
+      defined(_DEFAULT_SOURCE) ||		\
+      defined(_BSD_SOURCE) ||			\
+      defined(__USE_MISC) ||			\
       defined(__APPLE__) ||			\
       defined(__HAIKU__) ||			\
       defined(__NetBSD__) ||			\
@@ -74,7 +80,10 @@ char *strcasestr(const char *haystack, const char *needle);
 /* For some reason, UnixLib defines this unconditionally. Assume we're using
  *  UnixLib if building for RISC OS.
  */
-#if ((defined(_GNU_SOURCE) && !defined(__APPLE__)) ||	\
+#if (((defined(_GNU_SOURCE) ||				\
+       defined(_DEFAULT_SOURCE) ||			\
+       defined(_BSD_SOURCE) ||				\
+       defined(__USE_MISC)) && !defined(__APPLE__)) ||	\
      defined(__riscos__) || \
      defined(NetBSD_v8))
 #define HAVE_STRCHRNUL

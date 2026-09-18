@@ -1206,7 +1206,7 @@ static CURLcode fetch_curl_set_options(struct curl_fetch_info *f)
 	}
 
 	if ((auth = urldb_get_auth_details(f->url, NULL)) != NULL) {
-		SETOPT(CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+		SETOPT(CURLOPT_HTTPAUTH, (long) CURLAUTH_BASIC);
 		SETOPT(CURLOPT_USERPWD, auth);
 	} else {
 		SETOPT(CURLOPT_USERPWD, NULL);
@@ -1243,7 +1243,7 @@ static CURLcode fetch_curl_set_options(struct curl_fetch_info *f)
 	}
 
 	/* Force-enable SSL session ID caching, as some distros are odd. */
-	SETOPT(CURLOPT_SSL_SESSIONID_CACHE, 1);
+	SETOPT(CURLOPT_SSL_SESSIONID_CACHE, 1L);
 
 	if (urldb_get_cert_permissions(f->url)) {
 		/* Disable certificate verification */
