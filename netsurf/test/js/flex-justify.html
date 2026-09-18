@@ -1,0 +1,29 @@
+<html>
+  <head>
+    <title>flex alignment test</title>
+    <style>
+      body { margin: 0; }
+      div.row { display: flex; width: 300px; }
+      div.start { justify-content: flex-start; }
+      div.middle { justify-content: center; }
+      div.end { justify-content: flex-end; }
+      div.between { justify-content: space-between; }
+      div.wrapped {
+        display: flex;
+        flex-wrap: wrap;
+        width: 100px;
+        height: 200px;
+        align-content: flex-end;
+      }
+      div.wide { width: 100px; }
+    </style>
+  </head>
+  <body>
+    <div class="row start"><div>SSS</div></div>
+    <div class="row middle"><div>CCC</div></div>
+    <div class="row end"><div>EEE</div></div>
+    <div class="row between"><div>B1</div><div>B2</div></div>
+    <div class="row"><div style="order: 2">ordered second</div><div style="order: 1">ordered first</div></div>
+    <div class="wrapped"><div class="wide">L1</div><div class="wide">L2</div></div>
+  </body>
+</html>

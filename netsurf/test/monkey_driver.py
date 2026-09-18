@@ -471,10 +471,13 @@ def run_test_step_action_plot_check(ctx, step):
         checks = {}
 
     all_text_list = []
+    placed_text = []
     bitmaps = []
     for plot in win.redraw(coords=area):
         if plot[0] == 'TEXT':
             all_text_list.extend(plot[6:])
+            placed_text.append((int(plot[2]), int(plot[4]),
+                                " ".join(plot[6:])))
         if plot[0] == 'BITMAP':
             bitmaps.append(plot[1:])
     all_text = " ".join(all_text_list)
@@ -485,6 +488,19 @@ def run_test_step_action_plot_check(ctx, step):
         elif 'text-not-contains' in check.keys():
             print("        Check {} NOT in {}".format(repr(check['text-not-contains']), repr(all_text)))
             assert check['text-not-contains'] not in all_text
+        elif 'text-at' in check.keys():
+            # Where a run of text landed, which is the only handle a test
+            # has on what layout did.
+            spec = check['text-at']
+            matches = [t for t in placed_text if spec['text'] in t[2]]
+            print("        Check {} is at {}".format(
+                repr(spec['text']), repr(matches)))
+            assert len(matches) == 1
+            tolerance = int(spec.get('tolerance', 2))
+            if 'x' in spec.keys():
+                assert abs(matches[0][0] - int(spec['x'])) <= tolerance
+            if 'y' in spec.keys():
+                assert abs(matches[0][1] - int(spec['y'])) <= tolerance
         elif 'bitmap-count' in check.keys():
             print("        Check bitmap count is {}".format(int(check['bitmap-count'])))
             assert len(bitmaps) == int(check['bitmap-count'])
