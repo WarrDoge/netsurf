@@ -36,3 +36,13 @@ support respectively.
 There are multiple GUI toolkits available which all have additional
 dependencies i.e. gtk browser frontend requires the gtk development
 libraries.
+
+Licence
+-------
+
+NetSurf and its support libraries are licensed under the GNU General
+Public License version 2; the full text is in the COPYING file at the
+root of this tree. Individual components carry their own COPYING files
+where their terms differ: netsurf/COPYING adds an OpenSSL linking
+exception and covers the MIT-licensed artwork, and several support
+libraries are MIT rather than GPL.
