@@ -1502,6 +1502,17 @@ css_error handleDeclaration(css_language *c, const parserutils_vector *vector)
 
 		consumeWhitespace(vector, &ctx);
 
+		/* Only definitions at the top level of the sheet are
+		 * recorded. Substitution happens while parsing, long before
+		 * a media query is evaluated, so taking a definition from
+		 * inside one would apply a theme the display may not be
+		 * asking for; the usual case being a dark palette redefined
+		 * under prefers-color-scheme and then used everywhere.
+		 */
+		if (rule->ptype != CSS_RULE_PARENT_STYLESHEET) {
+			return CSS_OK;
+		}
+
 		return custom_prop_define(c, custom, vector, ctx);
 	}
 
