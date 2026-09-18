@@ -239,6 +239,47 @@ static void nscss_dom_user_data_handler(dom_node_operation operation,
 	}
 }
 
+/* exported interface documented in content/handlers/css/select.h */
+void nscss_invalidate_node_data(dom_node *node)
+{
+	dom_node *child;
+	void *node_data = NULL;
+
+	if ((dom_node_get_user_data(node,
+			corestring_dom___ns_key_libcss_node_data,
+			&node_data) == DOM_NO_ERR) && (node_data != NULL)) {
+		/* libcss caches its selection results on the node and
+		 * asserts that it is the only owner, so re-selecting a node
+		 * that still carries results from a previous pass aborts.
+		 */
+		css_libcss_node_data_handler(&selection_handler,
+				CSS_NODE_DELETED, NULL, node, NULL, node_data);
+
+		/* pass no handler: the data is already destroyed */
+		dom_node_set_user_data(node,
+				corestring_dom___ns_key_libcss_node_data,
+				NULL, NULL, &node_data);
+	}
+
+	if (dom_node_get_first_child(node, &child) != DOM_NO_ERR) {
+		return;
+	}
+
+	while (child != NULL) {
+		dom_node *next;
+
+		nscss_invalidate_node_data(child);
+
+		if (dom_node_get_next_sibling(child, &next) != DOM_NO_ERR) {
+			next = NULL;
+		}
+
+		dom_node_unref(child);
+		child = next;
+	}
+}
+
+
 /**
  * Get style selection results for an element
  *

@@ -293,6 +293,16 @@ bool html_saw_insecure_scripts(html_content *htmlc);
  */
 nserror html_proceed_to_done(html_content *html);
 
+/**
+ * Schedule a rebuild of the box tree from the current DOM.
+ *
+ * Call after a DOM mutation that can change layout. Repeated calls before
+ * the rebuild runs collapse into one.
+ *
+ * \param html The html content whose DOM changed.
+ */
+void html_schedule_reflow(html_content *html);
+
 
 /* in html/redraw.c */
 bool html_redraw(struct content *c, struct content_redraw_data *data,
