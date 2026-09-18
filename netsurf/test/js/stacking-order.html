@@ -1,0 +1,19 @@
+<html>
+  <head>
+    <title>stacking order test</title>
+    <style>
+      body { margin: 0; }
+      .over { position: relative; }
+      .high { position: absolute; z-index: 2; top: 100px; }
+      .low { position: absolute; z-index: 1; top: 120px; }
+      .below { position: absolute; z-index: -1; top: 140px; }
+    </style>
+  </head>
+  <body>
+    <div class="over">positioned first</div>
+    <div>in flow second</div>
+    <div class="high">zindex two</div>
+    <div class="low">zindex one</div>
+    <div class="below">zindex minus</div>
+  </body>
+</html>
