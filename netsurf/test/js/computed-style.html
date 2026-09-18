@@ -1,0 +1,43 @@
+<html>
+  <head>
+    <title>getComputedStyle test</title>
+    <style>
+      body { margin: 0; }
+      #probe {
+        display: block;
+        width: 120px;
+        height: 40px;
+        margin-left: 12px;
+        padding-top: 5px;
+        color: rgb(10, 20, 30);
+        text-align: center;
+        position: relative;
+        z-index: 3;
+      }
+      #gone { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="probe">probe</div>
+    <div id="gone">gone</div>
+    <div id="log">unset</div>
+    <script>
+      var log = document.getElementById("log");
+      setTimeout(function () {
+      var style = window.getComputedStyle(document.getElementById("probe"));
+      var hidden = window.getComputedStyle(document.getElementById("gone"));
+      var report = "display=" + style.display +
+                   " width=" + style.width +
+                   " marginLeft=" + style.marginLeft +
+                   " paddingTop=" + style.getPropertyValue("padding-top") +
+                   " color=" + style.color +
+                   " align=" + style.textAlign +
+                   " position=" + style.position +
+                   " z=" + style.zIndex +
+                   " none=[" + hidden.display + "]";
+      log.removeChild(log.firstChild);
+      log.appendChild(document.createTextNode(report));
+      }, 100);
+    </script>
+  </body>
+</html>

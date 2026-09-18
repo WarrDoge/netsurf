@@ -1213,7 +1213,8 @@ static int html_redraw_box_z_index(const struct box *box)
 		return 0;
 	}
 
-	return (int)index;
+	/* libcss types this an integer and stores it fixed point */
+	return FIXTOINT(index);
 }
 
 
