@@ -1564,21 +1564,32 @@ bool html_keypress(struct content *c, uint32_t key)
 	 *    3. Release c
 	 *    4. Release ctrl
 	 * 3. Pass all the new info to the DOM KeyboardEvent events.
-	 * 4. If there is a focused element, fire the event at that, instead of
-	 *    `html->layout->node`.
-	 * 5. Rebuild the \ref NS_KEY_COPY_SELECTION values from the info we
+	 * 4. Rebuild the \ref NS_KEY_COPY_SELECTION values from the info we
 	 *    now get given, and use that for the code below this
 	 *    \ref fire_dom_keyboard_event call.
-	 * 6. Move the code after this \ref fire_dom_keyboard_event call into
+	 * 5. Move the code after this \ref fire_dom_keyboard_event call into
 	 *    the default action handler for DOM events.
-	 *
-	 * This will mean that if the JavaScript event listener does
-	 * `event.preventDefault()` then we won't handle the event when
-	 * we're not supposed to.
 	 */
 	if (html->layout != NULL && html->layout->node != NULL) {
-		fire_dom_keyboard_event(corestring_dom_keydown,
-				html->layout->node, true, true, key);
+		dom_node *target = html->layout->node;
+
+		/* A focused text control is the element the key was typed
+		 * at.  Nothing else in this browser takes focus yet, so
+		 * everything else is still aimed at the document.
+		 */
+		if (html->focus_type == HTML_FOCUS_TEXTAREA &&
+		    html->focus_owner.textarea != NULL &&
+		    html->focus_owner.textarea->node != NULL) {
+			target = html->focus_owner.textarea->node;
+		}
+
+		if (fire_dom_keyboard_event(corestring_dom_keydown, target,
+					    true, true, key) == false) {
+			/* a listener called preventDefault(); the key is
+			 * consumed, so none of the handling below runs
+			 */
+			return true;
+		}
 	}
 
 	switch (html->focus_type) {
