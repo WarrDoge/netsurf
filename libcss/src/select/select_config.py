@@ -133,6 +133,8 @@ style = {
     ('column_fill', 2, None, None, 'CSS_COLUMN_FILL_BALANCE'),
     ('column_gap', 2, 'length',
         'CSS_COLUMN_GAP_SET', 'CSS_COLUMN_GAP_NORMAL'),
+    ('row_gap', 2, 'length',
+        'CSS_ROW_GAP_SET', 'CSS_ROW_GAP_NORMAL'),
     ('column_rule_color', 2, 'color', None,
         'CSS_COLUMN_RULE_COLOR_CURRENT_COLOR'),
     ('column_rule_style', 4, None, None, 'CSS_COLUMN_RULE_STYLE_NONE'),

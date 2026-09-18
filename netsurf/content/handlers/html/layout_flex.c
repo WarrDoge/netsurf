@@ -104,6 +104,11 @@ struct flex_ctx {
 	bool main_reversed;
 	enum css_flex_wrap_e wrap;
 
+	/** Spacing between items on a line, in device pixels. */
+	int main_gap;
+	/** Spacing between lines, in device pixels. */
+	int cross_gap;
+
 	struct flex_items {
 		size_t count;
 		struct flex_item_data *data;
@@ -137,6 +142,55 @@ static void layout_flex_ctx__destroy(struct flex_ctx *ctx)
  * \param[in] flex     Box to create layout context for
  * \return flex layout context or NULL on error
  */
+/**
+ * Resolve a gap value to device pixels.
+ *
+ * A gap of normal is zero for a flex container; the 1em that libcss gives
+ * column-gap is a multi-column convention and does not apply here.
+ */
+static int layout_flex__gap_len(
+		const struct flex_ctx *ctx,
+		const struct box *flex,
+		uint8_t type,
+		css_fixed length,
+		css_unit unit)
+{
+	if (type != CSS_COLUMN_GAP_SET) {
+		return 0;
+	}
+
+	return FIXTOINT(css_unit_len2device_px(flex->style,
+			ctx->unit_len_ctx, length, unit));
+}
+
+
+/**
+ * Read row-gap and column-gap into the main and cross axis spacing.
+ *
+ * column-gap always spaces columns and row-gap always spaces rows, so
+ * which one is the main axis follows flex-direction.
+ */
+static void layout_flex_ctx__read_gaps(
+		struct flex_ctx *ctx,
+		const struct box *flex)
+{
+	css_fixed length = 0;
+	css_unit unit = CSS_UNIT_PX;
+	uint8_t type;
+	int column;
+	int row;
+
+	type = css_computed_column_gap(flex->style, &length, &unit);
+	column = layout_flex__gap_len(ctx, flex, type, length, unit);
+
+	type = css_computed_row_gap(flex->style, &length, &unit);
+	row = layout_flex__gap_len(ctx, flex, type, length, unit);
+
+	ctx->main_gap = ctx->horizontal ? column : row;
+	ctx->cross_gap = ctx->horizontal ? row : column;
+}
+
+
 static struct flex_ctx *layout_flex_ctx__create(
 		html_content *content,
 		const struct box *flex)
@@ -170,6 +224,8 @@ static struct flex_ctx *layout_flex_ctx__create(
 	ctx->wrap = css_computed_flex_wrap(flex->style);
 	ctx->horizontal = lh__flex_main_is_horizontal(flex);
 	ctx->main_reversed = lh__flex_direction_reversed(flex);
+
+	layout_flex_ctx__read_gaps(ctx, flex);
 
 	return ctx;
 }
@@ -432,20 +488,24 @@ static struct flex_line_data *layout_flex__build_line(struct flex_ctx *ctx,
 		struct flex_item_data *item = &ctx->item.data[item_index];
 		struct box *b = item->box;
 		int pos_main;
+		int gap;
 
 		pos_main = ctx->horizontal ?
 				item->main_size :
 				b->height + lh__delta_outer_main(ctx->flex, b);
 
+		/* every item but the first on a line is preceded by a gap */
+		gap = (line->count > 0) ? ctx->main_gap : 0;
+
 		if (ctx->wrap == CSS_FLEX_WRAP_NOWRAP ||
-		    pos_main + used_main <= ctx->available_main ||
+		    pos_main + used_main + gap <= ctx->available_main ||
 		    lh__box_is_absolute(item->box) ||
 		    ctx->available_main == AUTO ||
 		    line->count == 0 ||
 		    pos_main == 0) {
 			if (lh__box_is_absolute(item->box) == false) {
-				line->main_size += item->main_size;
-				used_main += pos_main;
+				line->main_size += item->main_size + gap;
+				used_main += pos_main + gap;
 
 				if (b->margin[start_side] == AUTO) {
 					line->main_auto_margin_count++;
@@ -714,6 +774,14 @@ static bool layout_flex__resolve_line(
 
 	if (available_main == AUTO) {
 		available_main = INT_MAX;
+	} else if (line->count > 1) {
+		/* the gaps are already spoken for, so flexible items must
+		 * not be offered the space they occupy
+		 */
+		available_main -= ctx->main_gap * (int) (line->count - 1);
+		if (available_main < 0) {
+			available_main = 0;
+		}
 	}
 
 	grow = (line->main_size < available_main);
@@ -883,6 +951,15 @@ static bool layout_flex__place_line_items_main(
 			if (line->cross_size < cross_size) {
 				line->cross_size = cross_size;
 			}
+
+			if (i + 1 < item_count) {
+				/* pre_multiplier + post_multiplier is +1
+				 * forwards and -1 reversed, so this steps
+				 * the pen the right way for both
+				 */
+				main_pos += (pre_multiplier + post_multiplier) *
+						ctx->main_gap;
+			}
 		}
 	}
 
@@ -927,6 +1004,11 @@ static bool layout_flex__collect_items_into_lines(
 		if (ctx->main_size < line->main_size) {
 			ctx->main_size = line->main_size;
 		}
+	}
+
+	if (ctx->line.count > 1) {
+		ctx->cross_size += ctx->cross_gap *
+				(int) (ctx->line.count - 1);
 	}
 
 	return true;
@@ -1027,6 +1109,11 @@ static void layout_flex__place_lines(struct flex_ctx *ctx)
 		line->pos = line_pos;
 		line_pos += post_multiplier * line->cross_size +
 				extra + extra_remainder;
+
+		if (i + 1 < ctx->line.count) {
+			line_pos += (pre_multiplier + post_multiplier) *
+					ctx->cross_gap;
+		}
 
 		layout_flex__place_line_items_cross(ctx, line,
 				extra + extra_remainder);

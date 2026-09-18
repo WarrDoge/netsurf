@@ -211,6 +211,11 @@ enum op_column_gap {
 	COLUMN_GAP_SET			= 0x0080
 };
 
+enum op_row_gap {
+	ROW_GAP_NORMAL			= 0x0000,
+	ROW_GAP_SET			= 0x0080
+};
+
 enum op_column_rule_color {
 	COLUMN_RULE_COLOR_TRANSPARENT	= COLOR_TRANSPARENT,
 	COLUMN_RULE_COLOR_CURRENT_COLOR	= COLOR_CURRENT_COLOR,

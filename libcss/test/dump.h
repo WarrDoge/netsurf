@@ -493,6 +493,7 @@ static const char *opcode_names[] = {
 	"order",
 	"fill-opacity",
 	"stroke-opacity",
+	"row-gap",
 };
 
 static void dump_css_fixed(css_fixed f, char **ptr)
@@ -1514,6 +1515,23 @@ void dump_bytecode(css_style *style, char **ptr, uint32_t depth)
 				}
 					break;
 				case COLUMN_GAP_NORMAL:
+					*ptr += sprintf(*ptr, "normal");
+					break;
+				}
+				break;
+			case CSS_PROP_ROW_GAP:
+				switch (value) {
+				case ROW_GAP_SET:
+				{
+					uint32_t unit;
+					css_fixed val = *((css_fixed *) bytecode);
+					ADVANCE(sizeof(val));
+					unit = *((uint32_t *) bytecode);
+					ADVANCE(sizeof(unit));
+					dump_unit(val, unit, ptr);
+				}
+					break;
+				case ROW_GAP_NORMAL:
 					*ptr += sprintf(*ptr, "normal");
 					break;
 				}

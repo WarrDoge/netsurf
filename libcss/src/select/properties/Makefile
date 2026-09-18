@@ -34,7 +34,7 @@ clip.c \
 color.c \
 column_count.c \
 column_fill.c \
-column_gap.c \
+column_gap.c row_gap.c \
 column_rule_color.c \
 column_rule_style.c \
 column_rule_width.c \
