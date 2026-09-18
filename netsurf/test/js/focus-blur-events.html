@@ -1,0 +1,19 @@
+<html>
+  <head>
+    <title>focus and blur event test</title>
+  </head>
+  <body>
+    <input id="i" value="field">
+    <p id="away">click away here</p>
+    <div id="log">seen:</div>
+    <script>
+      var log = document.getElementById("log");
+      function note(name) {
+        log.appendChild(document.createTextNode(" " + name));
+      }
+      var i = document.getElementById("i");
+      i.addEventListener("focus", function () { note("focus"); });
+      i.addEventListener("blur", function () { note("blur"); });
+    </script>
+  </body>
+</html>

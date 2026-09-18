@@ -24,9 +24,377 @@ class Window {
 #include "netsurf/misc.h"
 #include "utils/ring.h"
 #include "netsurf/inttypes.h"
+#include "netsurf/css.h"
+#include "desktop/browser_history.h"
+#include "css/utils.h"
+#include "html/box.h"
+#include <ctype.h>
 
 #define WINDOW_CALLBACKS MAGIC(WindowCallbacks)
 #define HANDLER_MAGIC MAGIC(HANDLER_MAP)
+
+/* Computed style, as getComputedStyle reports it.
+ *
+ * Only the properties scripts actually read are here, and the lengths come
+ * from the laid out box rather than the style, because a used width is what
+ * the caller is asking for and a computed one is often a percentage or auto.
+ * An element with no box -- display none, or not laid out yet -- has no
+ * values to report and gets an empty declaration.
+ */
+
+static void window_style_put(duk_context *ctx, const char *name,
+		const char *value)
+{
+	char camel[48];
+	size_t i = 0;
+	size_t o = 0;
+
+	duk_push_string(ctx, value);
+	duk_put_prop_string(ctx, -2, name);
+
+	/* the same value under the property name script spells it with */
+	while ((name[i] != '\0') && (o < sizeof(camel) - 1)) {
+		if (name[i] == '-') {
+			i++;
+			if (name[i] != '\0') {
+				camel[o++] = (char)toupper((unsigned char)name[i++]);
+			}
+		} else {
+			camel[o++] = name[i++];
+		}
+	}
+	camel[o] = '\0';
+
+	if (strcmp(camel, name) != 0) {
+		duk_push_string(ctx, value);
+		duk_put_prop_string(ctx, -2, camel);
+	}
+}
+
+static void window_style_put_px(duk_context *ctx, const char *name, int px)
+{
+	char buf[32];
+
+	snprintf(buf, sizeof(buf), "%dpx", px);
+	window_style_put(ctx, name, buf);
+}
+
+static void window_style_put_colour(duk_context *ctx, const char *name,
+		css_color col)
+{
+	char buf[48];
+	unsigned int a = (col >> 24) & 0xff;
+
+	if (a == 0xff) {
+		snprintf(buf, sizeof(buf), "rgb(%u, %u, %u)",
+			 (unsigned int)((col >> 16) & 0xff),
+			 (unsigned int)((col >> 8) & 0xff),
+			 (unsigned int)(col & 0xff));
+	} else {
+		snprintf(buf, sizeof(buf), "rgba(%u, %u, %u, %.3g)",
+			 (unsigned int)((col >> 16) & 0xff),
+			 (unsigned int)((col >> 8) & 0xff),
+			 (unsigned int)(col & 0xff),
+			 (double)a / 255.0);
+	}
+
+	window_style_put(ctx, name, buf);
+}
+
+static const char *window_style_display(const css_computed_style *style)
+{
+	switch (ns_computed_display(style, false)) {
+	case CSS_DISPLAY_INLINE:		return "inline";
+	case CSS_DISPLAY_BLOCK:			return "block";
+	case CSS_DISPLAY_LIST_ITEM:		return "list-item";
+	case CSS_DISPLAY_INLINE_BLOCK:		return "inline-block";
+	case CSS_DISPLAY_TABLE:			return "table";
+	case CSS_DISPLAY_INLINE_TABLE:		return "inline-table";
+	case CSS_DISPLAY_TABLE_ROW_GROUP:	return "table-row-group";
+	case CSS_DISPLAY_TABLE_ROW:		return "table-row";
+	case CSS_DISPLAY_TABLE_CELL:		return "table-cell";
+	case CSS_DISPLAY_FLEX:			return "flex";
+	case CSS_DISPLAY_INLINE_FLEX:		return "inline-flex";
+	case CSS_DISPLAY_GRID:			return "grid";
+	case CSS_DISPLAY_INLINE_GRID:		return "inline-grid";
+	case CSS_DISPLAY_NONE:			return "none";
+	default:				return "inline";
+	}
+}
+
+static const char *window_style_position(const css_computed_style *style)
+{
+	switch (css_computed_position(style)) {
+	case CSS_POSITION_RELATIVE:	return "relative";
+	case CSS_POSITION_ABSOLUTE:	return "absolute";
+	case CSS_POSITION_FIXED:	return "fixed";
+	case CSS_POSITION_STICKY:	return "sticky";
+	default:			return "static";
+	}
+}
+
+static void window_style_build(duk_context *ctx, html_content *htmlc,
+		struct box *box)
+{
+	const css_computed_style *style;
+	css_fixed len;
+	css_unit unit;
+	css_color col;
+	int32_t index;
+	char buf[32];
+
+	duk_push_object(ctx);
+
+	if ((box == NULL) || (box->style == NULL)) {
+		/* No box means the element is not rendered, which is what
+		 * display none means, and is indistinguishable from it here.
+		 * Script running before the first layout sees this too.
+		 */
+		window_style_put(ctx, "display", "none");
+		return;
+	}
+
+	style = box->style;
+
+	window_style_put(ctx, "display", window_style_display(style));
+	window_style_put(ctx, "position", window_style_position(style));
+	window_style_put(ctx, "visibility",
+			 css_computed_visibility(style) ==
+			 CSS_VISIBILITY_HIDDEN ? "hidden" : "visible");
+
+	window_style_put_px(ctx, "width", box->width);
+	window_style_put_px(ctx, "height", box->height);
+	window_style_put_px(ctx, "margin-top", box->margin[TOP]);
+	window_style_put_px(ctx, "margin-right", box->margin[RIGHT]);
+	window_style_put_px(ctx, "margin-bottom", box->margin[BOTTOM]);
+	window_style_put_px(ctx, "margin-left", box->margin[LEFT]);
+	window_style_put_px(ctx, "padding-top", box->padding[TOP]);
+	window_style_put_px(ctx, "padding-right", box->padding[RIGHT]);
+	window_style_put_px(ctx, "padding-bottom", box->padding[BOTTOM]);
+	window_style_put_px(ctx, "padding-left", box->padding[LEFT]);
+	window_style_put_px(ctx, "border-top-width", box->border[TOP].width);
+	window_style_put_px(ctx, "border-right-width", box->border[RIGHT].width);
+	window_style_put_px(ctx, "border-bottom-width",
+			box->border[BOTTOM].width);
+	window_style_put_px(ctx, "border-left-width", box->border[LEFT].width);
+
+	css_computed_color(style, &col);
+	window_style_put_colour(ctx, "color", col);
+
+	if (css_computed_background_color(style, &col) ==
+	    CSS_BACKGROUND_COLOR_COLOR) {
+		window_style_put_colour(ctx, "background-color", col);
+	} else {
+		window_style_put(ctx, "background-color", "transparent");
+	}
+
+	css_computed_font_size(style, &len, &unit);
+	window_style_put_px(ctx, "font-size",
+			FIXTOINT(css_unit_len2device_px(style,
+					&htmlc->unit_len_ctx, len, unit)));
+
+	if (css_computed_z_index(style, &index) == CSS_Z_INDEX_SET) {
+		/* libcss types this an integer and stores it fixed point */
+		snprintf(buf, sizeof(buf), "%d", FIXTOINT(index));
+		window_style_put(ctx, "z-index", buf);
+	} else {
+		window_style_put(ctx, "z-index", "auto");
+	}
+
+	if (css_computed_opacity(style, &len) == CSS_OPACITY_SET) {
+		snprintf(buf, sizeof(buf), "%.3g", (double)FIXTOFLT(len));
+	} else {
+		snprintf(buf, sizeof(buf), "1");
+	}
+	window_style_put(ctx, "opacity", buf);
+
+	switch (css_computed_float(style)) {
+	case CSS_FLOAT_LEFT:
+		window_style_put(ctx, "float", "left");
+		break;
+	case CSS_FLOAT_RIGHT:
+		window_style_put(ctx, "float", "right");
+		break;
+	default:
+		window_style_put(ctx, "float", "none");
+		break;
+	}
+
+	switch (css_computed_text_align(style)) {
+	case CSS_TEXT_ALIGN_RIGHT:
+		window_style_put(ctx, "text-align", "right");
+		break;
+	case CSS_TEXT_ALIGN_CENTER:
+		window_style_put(ctx, "text-align", "center");
+		break;
+	case CSS_TEXT_ALIGN_JUSTIFY:
+		window_style_put(ctx, "text-align", "justify");
+		break;
+	default:
+		window_style_put(ctx, "text-align", "left");
+		break;
+	}
+
+	switch (css_computed_overflow_y(style)) {
+	case CSS_OVERFLOW_HIDDEN:
+		window_style_put(ctx, "overflow", "hidden");
+		break;
+	case CSS_OVERFLOW_SCROLL:
+		window_style_put(ctx, "overflow", "scroll");
+		break;
+	case CSS_OVERFLOW_AUTO:
+		window_style_put(ctx, "overflow", "auto");
+		break;
+	default:
+		window_style_put(ctx, "overflow", "visible");
+		break;
+	}
+}
+
+/* The viewport, asked for the way layout asks for it.  The content's own
+ * copy is only filled in once it lays out, and script runs before that.
+ */
+static unsigned window_viewport(html_content *htmlc, bool want_width)
+{
+	unsigned w = 0;
+	unsigned h = 0;
+	union content_msg_data msg_data = {
+		.getdims = {
+			.viewport_width = &w,
+			.viewport_height = &h,
+		},
+	};
+
+	content_broadcast(&htmlc->base, CONTENT_MSG_GETDIMS, &msg_data);
+
+	return want_width ? w : h;
+}
+
+
+/* Session history.
+ *
+ * Going back and forward is real.  pushState and replaceState are not: the
+ * history here is built out of navigations, and there is no way to add an
+ * entry for a url the browser never went to, so they record the state object
+ * and leave the address alone.  A page that uses them to decorate navigation
+ * it also does for itself still works; a router that expects the address to
+ * follow does not.
+ */
+
+static struct browser_window *window_history_bw(duk_context *ctx)
+{
+	struct browser_window *bw;
+
+	duk_push_this(ctx);
+	duk_get_prop_string(ctx, -1, MAGIC(HistoryWindow));
+	bw = duk_get_pointer(ctx, -1);
+	duk_pop_2(ctx);
+
+	return bw;
+}
+
+static bool window_history_count(const struct browser_window *bw,
+		int x0, int y0, int x1, int y1,
+		const struct history_entry *entry, void *user_data)
+{
+	int *count = user_data;
+
+	(void)bw;
+	(void)x0;
+	(void)y0;
+	(void)x1;
+	(void)y1;
+	(void)entry;
+	(*count)++;
+
+	return true;
+}
+
+static int window_history_length(struct browser_window *bw)
+{
+	int count = 0;
+
+	if (bw != NULL) {
+		browser_window_history_enumerate(bw, window_history_count,
+				&count);
+	}
+
+	/* The page asking is itself an entry, even before the navigation
+	 * that brought it has been recorded
+	 */
+	return (count > 0) ? count : 1;
+}
+
+static duk_ret_t window_history_back(duk_context *ctx)
+{
+	struct browser_window *bw = window_history_bw(ctx);
+
+	if (bw != NULL) {
+		browser_window_history_back(bw, false);
+	}
+
+	return 0;
+}
+
+static duk_ret_t window_history_forward(duk_context *ctx)
+{
+	struct browser_window *bw = window_history_bw(ctx);
+
+	if (bw != NULL) {
+		browser_window_history_forward(bw, false);
+	}
+
+	return 0;
+}
+
+static duk_ret_t window_history_go(duk_context *ctx)
+{
+	struct browser_window *bw = window_history_bw(ctx);
+	duk_int_t delta = duk_to_int(ctx, 0);
+
+	if (bw == NULL || delta == 0) {
+		return 0;
+	}
+
+	/* One step per call is all the core offers, so a longer jump is
+	 * made of repeats and stops where the history does.
+	 */
+	while (delta < 0 && browser_window_history_back_available(bw)) {
+		browser_window_history_back(bw, false);
+		delta++;
+	}
+	while (delta > 0 && browser_window_history_forward_available(bw)) {
+		browser_window_history_forward(bw, false);
+		delta--;
+	}
+
+	return 0;
+}
+
+static duk_ret_t window_history_push_state(duk_context *ctx)
+{
+	duk_push_this(ctx);
+	duk_dup(ctx, 0);
+	duk_put_prop_string(ctx, -2, "state");
+	duk_pop(ctx);
+
+	return 0;
+}
+
+
+static duk_ret_t window_style_get_property_value(duk_context *ctx)
+{
+	duk_push_this(ctx);
+	duk_dup(ctx, 0);
+	duk_get_prop(ctx, -2);
+
+	if (duk_is_undefined(ctx, -1)) {
+		duk_pop(ctx);
+		duk_push_string(ctx, "");
+	}
+
+	return 1;
+}
 
 static size_t next_handle = 0;
 
@@ -437,6 +805,94 @@ getter Window::console()
 		duk_dup(ctx, -1);
 		duk_put_prop_string(ctx, -3, MAGIC(Console));
 	}
+	return 1;
+%}
+
+method Window::getComputedStyle()
+%{
+	node_private_t *node_priv;
+	struct box *box = NULL;
+
+	if (!duk_is_object(ctx, 0)) {
+		duk_push_object(ctx);
+		return 1;
+	}
+
+	duk_get_prop_string(ctx, 0, PRIVATE_MAGIC);
+	node_priv = duk_get_pointer(ctx, -1);
+	duk_pop(ctx);
+
+	if ((node_priv != NULL) && (node_priv->node != NULL)) {
+		dom_node_get_user_data(node_priv->node,
+				corestring_dom___ns_key_box_node_data,
+				&box);
+	}
+
+	window_style_build(ctx, priv->htmlc, box);
+
+	duk_push_c_function(ctx, window_style_get_property_value, 1);
+	duk_put_prop_string(ctx, -2, "getPropertyValue");
+
+	return 1;
+%}
+
+getter Window::innerWidth()
+%{
+	duk_push_int(ctx, (duk_int_t)window_viewport(priv->htmlc, true));
+	return 1;
+%}
+
+getter Window::innerHeight()
+%{
+	duk_push_int(ctx, (duk_int_t)window_viewport(priv->htmlc, false));
+	return 1;
+%}
+
+getter Window::devicePixelRatio()
+%{
+	duk_push_number(ctx, (double)browser_window_get_scale(priv->win));
+	return 1;
+%}
+
+getter Window::history()
+%{
+	/* One object per window, because pushState records its state on it
+	 * and a fresh one each time would lose it
+	 */
+	duk_push_this(ctx);
+	duk_get_prop_string(ctx, -1, MAGIC(History));
+	if (!duk_is_undefined(ctx, -1)) {
+		return 1;
+	}
+	duk_pop_2(ctx);
+
+	duk_push_object(ctx);
+
+	duk_push_pointer(ctx, priv->win);
+	duk_put_prop_string(ctx, -2, MAGIC(HistoryWindow));
+
+	duk_push_c_function(ctx, window_history_back, 0);
+	duk_put_prop_string(ctx, -2, "back");
+	duk_push_c_function(ctx, window_history_forward, 0);
+	duk_put_prop_string(ctx, -2, "forward");
+	duk_push_c_function(ctx, window_history_go, 1);
+	duk_put_prop_string(ctx, -2, "go");
+	duk_push_c_function(ctx, window_history_push_state, 3);
+	duk_put_prop_string(ctx, -2, "pushState");
+	duk_push_c_function(ctx, window_history_push_state, 3);
+	duk_put_prop_string(ctx, -2, "replaceState");
+
+	duk_push_int(ctx, window_history_length(priv->win));
+	duk_put_prop_string(ctx, -2, "length");
+
+	duk_push_null(ctx);
+	duk_put_prop_string(ctx, -2, "state");
+
+	duk_push_this(ctx);
+	duk_dup(ctx, -2);
+	duk_put_prop_string(ctx, -2, MAGIC(History));
+	duk_pop(ctx);
+
 	return 1;
 %}
 

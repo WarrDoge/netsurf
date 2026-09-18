@@ -2457,8 +2457,13 @@ dom_exception _dom_node_dispatch_event(dom_event_target *et,
 	ntargets_allocated = 0;
 	ntargets = 0;
 
-	/* Add interested event listeners to array */
-	for (; target != NULL; target = target->parent) {
+	/* Add interested event listeners to array.
+	 *
+	 * The target itself is not on this path: its listeners run in the
+	 * at-target phase, whatever their capture flag, and adding it here
+	 * would run every non-capturing one a second time while bubbling.
+	 */
+	for (target = target->parent; target != NULL; target = target->parent) {
 		struct listener_entry *le = target->eti.listeners;
 		bool target_has_listener = false;
 

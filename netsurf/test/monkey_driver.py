@@ -396,11 +396,18 @@ def run_test_step_action_click(ctx, step):
     print(get_indent(ctx) + "Action: " + step["action"])
     assert_browser(ctx)
     win = ctx['windows'][step['window']]
+    button = step.get('button', 'left').upper()
+    kind = step.get('kind', 'single').upper()
+
+    if 'target' not in step.keys():
+        # Nothing on the page to aim at, such as a checkbox, is clicked
+        # by coordinate instead.
+        win.click(int(step['x']), int(step['y']), button, kind)
+        return
+
     targets = step['target']
     if type(targets) == dict:
         targets = [targets]
-    button = step.get('button', 'left').upper()
-    kind = step.get('kind', 'single').upper()
     all_text_list = []
     bitmaps = []
     for plot in win.redraw():
@@ -464,10 +471,13 @@ def run_test_step_action_plot_check(ctx, step):
         checks = {}
 
     all_text_list = []
+    placed_text = []
     bitmaps = []
     for plot in win.redraw(coords=area):
         if plot[0] == 'TEXT':
             all_text_list.extend(plot[6:])
+            placed_text.append((int(plot[2]), int(plot[4]),
+                                " ".join(plot[6:])))
         if plot[0] == 'BITMAP':
             bitmaps.append(plot[1:])
     all_text = " ".join(all_text_list)
@@ -478,6 +488,19 @@ def run_test_step_action_plot_check(ctx, step):
         elif 'text-not-contains' in check.keys():
             print("        Check {} NOT in {}".format(repr(check['text-not-contains']), repr(all_text)))
             assert check['text-not-contains'] not in all_text
+        elif 'text-at' in check.keys():
+            # Where a run of text landed, which is the only handle a test
+            # has on what layout did.
+            spec = check['text-at']
+            matches = [t for t in placed_text if spec['text'] in t[2]]
+            print("        Check {} is at {}".format(
+                repr(spec['text']), repr(matches)))
+            assert len(matches) == 1
+            tolerance = int(spec.get('tolerance', 2))
+            if 'x' in spec.keys():
+                assert abs(matches[0][0] - int(spec['x'])) <= tolerance
+            if 'y' in spec.keys():
+                assert abs(matches[0][1] - int(spec['y'])) <= tolerance
         elif 'bitmap-count' in check.keys():
             print("        Check bitmap count is {}".format(int(check['bitmap-count'])))
             assert len(bitmaps) == int(check['bitmap-count'])
@@ -584,6 +607,17 @@ def run_test_step_action_wait_log(ctx, step):
     win.wait_for_log(source=source, foldable=foldable, level=level, substr=substr)
 
 
+def run_test_step_action_key(ctx, step):
+    print(get_indent(ctx) + "Action: " + step["action"])
+    assert_browser(ctx)
+    win = ctx['windows'][step['window']]
+    if 'text' in step.keys():
+        for char in step['text']:
+            win.key(ord(char))
+    else:
+        win.key(int(step['code']))
+
+
 def run_test_step_action_js_exec(ctx, step):
     print(get_indent(ctx) + "Action: " + step["action"])
     assert_browser(ctx)
@@ -635,6 +669,7 @@ STEP_HANDLERS = {
     "remove-auth":   run_test_step_action_remove_auth,
     "clear-log":     run_test_step_action_clear_log,
     "wait-log":      run_test_step_action_wait_log,
+    "key":           run_test_step_action_key,
     "js-exec":       run_test_step_action_js_exec,
     "page-info-state":
                      run_test_step_action_page_info_state,

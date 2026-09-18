@@ -1,0 +1,26 @@
+<html>
+  <head>
+    <title>viewport, matchMedia and history test</title>
+  </head>
+  <body>
+    <div id="log">unset</div>
+    <script>
+      var log = document.getElementById("log");
+      var report = "w=" + window.innerWidth +
+        " h=" + window.innerHeight +
+        " wide=" + window.matchMedia("(min-width: 400px)").matches +
+        " narrow=" + window.matchMedia("(max-width: 100px)").matches +
+        " land=" + window.matchMedia("(orientation: landscape)").matches +
+        " screen=" + window.matchMedia("screen").matches +
+        " print=" + window.matchMedia("print").matches +
+        " both=" + window.matchMedia("screen and (min-width: 400px)").matches +
+        " scrw=" + window.screen.width +
+        " hist=" + (typeof window.history.back) +
+        " len=" + (window.history.length >= 1);
+      window.history.pushState({ a: 1 }, "", "/somewhere");
+      report += " state=" + JSON.stringify(window.history.state);
+      log.removeChild(log.firstChild);
+      log.appendChild(document.createTextNode(report));
+    </script>
+  </body>
+</html>

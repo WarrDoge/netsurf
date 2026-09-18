@@ -609,6 +609,7 @@ struct mouse_action_state {
 		int box_x;
 		int box_y;
 		const char *target;
+		bool changed; /**< the click altered the control's value */
 	} gadget;
 
 	/** title */
@@ -868,12 +869,18 @@ gadget_mouse_action(html_content *html,
 				(dom_html_input_element *)(mas->gadget.control->node),
 				mas->gadget.control->selected);
 			html__redraw_a_box(html, mas->gadget.box);
+			mas->gadget.changed = true;
 		}
 		break;
 
 	case GADGET_RADIO:
 		mas->result.status = messages_get("FormRadio");
 		if (mouse & BROWSER_MOUSE_CLICK_1) {
+			/* a radio already selected is left alone, and so
+			 * reports no change
+			 */
+			mas->gadget.changed =
+				(mas->gadget.control->selected == false);
 			form_radio_set(mas->gadget.control);
 		}
 		break;
@@ -1396,9 +1403,46 @@ mouse_action_drag_none(html_content *html,
 		content_broadcast(c, CONTENT_MSG_POINTER, &msg_data);
 	}
 
-	/* fire dom click event */
+	/* fire the dom mouse events, in the order a mouse produces them */
+	if (mas.node != html->mouse_over) {
+		if (html->mouse_over != NULL) {
+			fire_generic_dom_event(corestring_dom_mouseout,
+					       html->mouse_over, true, true);
+			dom_node_unref(html->mouse_over);
+			html->mouse_over = NULL;
+		}
+		if (mas.node != NULL) {
+			html->mouse_over = dom_node_ref(mas.node);
+			fire_generic_dom_event(corestring_dom_mouseover,
+					       mas.node, true, true);
+		}
+	}
+
+	if (mouse & (BROWSER_MOUSE_PRESS_1 | BROWSER_MOUSE_PRESS_2)) {
+		fire_generic_dom_event(corestring_dom_mousedown,
+				       mas.node, true, true);
+	}
+
+	/* The core has no separate release event: a click is reported when
+	 * the button comes back up, so that is where mouseup belongs.
+	 */
+	if (mouse & (BROWSER_MOUSE_CLICK_1 | BROWSER_MOUSE_CLICK_2)) {
+		fire_generic_dom_event(corestring_dom_mouseup,
+				       mas.node, true, true);
+	}
+
 	if (mouse & BROWSER_MOUSE_CLICK_1) {
 		fire_generic_dom_event(corestring_dom_click, mas.node, true, true);
+	}
+
+	/* fire dom change event for a control the click has just altered.
+	 * The gadget switch above is too early to run script from: it is
+	 * still walking its own state.
+	 */
+	if (mas.gadget.changed) {
+		fire_generic_dom_event(corestring_dom_change,
+				       (dom_node *)mas.gadget.control->node,
+				       true, false);
 	}
 
 	/* deferred actions that can cause this browser_window to be destroyed
@@ -1406,6 +1450,13 @@ mouse_action_drag_none(html_content *html,
 	 */
 	switch (mas.result.action) {
 	case ACTION_SUBMIT:
+		if (fire_generic_dom_event(
+			    corestring_dom_submit,
+			    (dom_node *)mas.gadget.control->form->node,
+			    true, true) == false) {
+			/* a listener called preventDefault() */
+			break;
+		}
 		res = form_submit(content_get_url(c),
 				  browser_window_find_target(bw,
 							     mas.gadget.target,
@@ -1540,21 +1591,32 @@ bool html_keypress(struct content *c, uint32_t key)
 	 *    3. Release c
 	 *    4. Release ctrl
 	 * 3. Pass all the new info to the DOM KeyboardEvent events.
-	 * 4. If there is a focused element, fire the event at that, instead of
-	 *    `html->layout->node`.
-	 * 5. Rebuild the \ref NS_KEY_COPY_SELECTION values from the info we
+	 * 4. Rebuild the \ref NS_KEY_COPY_SELECTION values from the info we
 	 *    now get given, and use that for the code below this
 	 *    \ref fire_dom_keyboard_event call.
-	 * 6. Move the code after this \ref fire_dom_keyboard_event call into
+	 * 5. Move the code after this \ref fire_dom_keyboard_event call into
 	 *    the default action handler for DOM events.
-	 *
-	 * This will mean that if the JavaScript event listener does
-	 * `event.preventDefault()` then we won't handle the event when
-	 * we're not supposed to.
 	 */
 	if (html->layout != NULL && html->layout->node != NULL) {
-		fire_dom_keyboard_event(corestring_dom_keydown,
-				html->layout->node, true, true, key);
+		dom_node *target = html->layout->node;
+
+		/* A focused text control is the element the key was typed
+		 * at.  Nothing else in this browser takes focus yet, so
+		 * everything else is still aimed at the document.
+		 */
+		if (html->focus_type == HTML_FOCUS_TEXTAREA &&
+		    html->focus_owner.textarea != NULL &&
+		    html->focus_owner.textarea->node != NULL) {
+			target = html->focus_owner.textarea->node;
+		}
+
+		if (fire_dom_keyboard_event(corestring_dom_keydown, target,
+					    true, true, key) == false) {
+			/* a listener called preventDefault(); the key is
+			 * consumed, so none of the handling below runs
+			 */
+			return true;
+		}
 	}
 
 	switch (html->focus_type) {
@@ -1618,6 +1680,12 @@ void html_overflow_scroll_callback(void *client_data,
 		}
 
 		html__redraw_a_box(html, box);
+
+		if (box->node != NULL) {
+			/* scroll at an element does not bubble */
+			fire_generic_dom_event(corestring_dom_scroll,
+					       box->node, false, false);
+		}
 		break;
 	case SCROLLBAR_MSG_SCROLL_START:
 	{
@@ -1692,8 +1760,17 @@ void html_set_focus(html_content *html, html_focus_type focus_type,
 	struct rect cr;
 	bool textarea_lost_focus = html->focus_type == HTML_FOCUS_TEXTAREA &&
 			focus_type != HTML_FOCUS_TEXTAREA;
+	dom_node *new_focus = NULL;
 
 	assert(html != NULL);
+
+	/* Only a text control takes focus in this browser, so those are the
+	 * only elements blur and focus have to name.
+	 */
+	if (focus_type == HTML_FOCUS_TEXTAREA &&
+	    focus_owner.textarea != NULL) {
+		new_focus = focus_owner.textarea->node;
+	}
 
 	switch (focus_type) {
 	case HTML_FOCUS_SELF:
@@ -1737,6 +1814,27 @@ void html_set_focus(html_content *html, html_focus_type focus_type,
 
 	/* Inform of the content's drag status change */
 	content_broadcast((struct content *)html, CONTENT_MSG_CARET, &msg_data);
+
+	/* blur and focus do not bubble, and run last so that script sees
+	 * the focus already moved.  A reflow re-sets the focus on the
+	 * rebuilt box, which is not the focus moving, so the comparison is
+	 * against the element and not the box.
+	 */
+	if (new_focus != html->focus_node) {
+		if (html->focus_node != NULL) {
+			dom_node *lost = html->focus_node;
+
+			html->focus_node = NULL;
+			fire_generic_dom_event(corestring_dom_blur,
+					       lost, false, false);
+			dom_node_unref(lost);
+		}
+		if (new_focus != NULL) {
+			html->focus_node = dom_node_ref(new_focus);
+			fire_generic_dom_event(corestring_dom_focus,
+					       new_focus, false, false);
+		}
+	}
 }
 
 /* Documented in html_internal.h */

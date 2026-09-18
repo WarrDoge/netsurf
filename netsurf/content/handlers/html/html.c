@@ -903,6 +903,7 @@ html_begin_conversion(html_content *htmlc)
 	dom_exception exc; /* returned by libdom functions */
 	dom_string *node_name = NULL;
 	dom_hubbub_error error;
+	bool first_conversion;
 
 	/* The act of completing the parse can result in additional data
 	 * being flushed through the parser. This may result in new style or
@@ -954,14 +955,22 @@ html_begin_conversion(html_content *htmlc)
 	}
 
 	/* Conversion begins proper at this point */
+	first_conversion = (htmlc->conversion_begun == false);
 	htmlc->conversion_begun = true;
 
 	/* complete script execution, including deferred scripts */
 	html_script_exec(htmlc, true);
 
 	/* fire a simple event that bubbles named DOMContentLoaded at
-	 * the Document.
+	 * the Document.  A late stylesheet or script brings us back here a
+	 * second time, so this is gated on the first arrival: the event
+	 * fires once per document.
 	 */
+	if (first_conversion && htmlc->jsthread != NULL) {
+		fire_generic_dom_event(corestring_dom_DOMContentLoaded,
+				       (dom_node *)htmlc->document,
+				       true, false);
+	}
 
 	/* get encoding */
 	if (htmlc->encoding == NULL) {
@@ -1238,6 +1247,16 @@ static void html_destroy(struct content *c)
 	}
 
 	selection_destroy(html->sel);
+
+	if (html->mouse_over != NULL) {
+		dom_node_unref(html->mouse_over);
+		html->mouse_over = NULL;
+	}
+
+	if (html->focus_node != NULL) {
+		dom_node_unref(html->focus_node);
+		html->focus_node = NULL;
+	}
 
 	/* a rebuild caught in flight still owns the outgoing tree */
 	if (html->reflow_old.active) {

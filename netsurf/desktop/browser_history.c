@@ -273,6 +273,13 @@ static bool browser_window_history__enumerate_entry(
 {
 	const struct history_entry *child;
 
+	/* A window that has not finished its first navigation has a history
+	 * with no entries in it yet
+	 */
+	if (entry == NULL) {
+		return true;
+	}
+
 	if (!cb(bw, entry->x, entry->y,
 			entry->x + LOCAL_HISTORY_WIDTH,
 			entry->y + LOCAL_HISTORY_HEIGHT,

@@ -1,0 +1,15 @@
+<html>
+  <head>
+    <title>DOMContentLoaded test</title>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        var p = document.createElement("p");
+        p.appendChild(document.createTextNode("dcl listener ran"));
+        document.body.appendChild(p);
+      });
+    </script>
+  </head>
+  <body>
+    <p>page body</p>
+  </body>
+</html>

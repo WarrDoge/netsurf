@@ -119,6 +119,8 @@ typedef struct {
 	bool tried_with_tls_downgrade;	/**< Whether we've tried TLS 1.2 */
 
 	bool tainted_tls;		/**< Whether the TLS transport is tainted */
+
+	long http_code;			/**< Status the response carried, 0 if none */
 } llcache_fetch_ctx;
 
 /**
@@ -3068,6 +3070,11 @@ static void llcache_fetch_callback(const fetch_msg *msg, void *p)
 		/* Received a fetch header */
 		object->fetch.state = LLCACHE_FETCH_HEADERS;
 
+		/* Kept because the fetch is gone by the time a client is
+		 * told the object is done with
+		 */
+		object->fetch.http_code = fetch_http_code(object->fetch.fetch);
+
 		error = llcache_fetch_process_header(object,
 				msg->data.header_or_data.buf,
 				msg->data.header_or_data.len);
@@ -4197,6 +4204,12 @@ const uint8_t *llcache_handle_get_source_data(const llcache_handle *handle,
 	*size = handle->object != NULL ? handle->object->source_len : 0;
 
 	return handle->object != NULL ? handle->object->source_data : NULL;
+}
+
+/* See llcache.h for documentation */
+long llcache_handle_get_http_code(const llcache_handle *handle)
+{
+	return handle->object != NULL ? handle->object->fetch.http_code : 0;
 }
 
 /* See llcache.h for documentation */

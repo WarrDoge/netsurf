@@ -1,0 +1,32 @@
+title: before and after pseudo elements render their content
+group: basic
+steps:
+- action: launch
+- action: window-new
+  tag: win1
+- action: navigate
+  window: win1
+  url: file://${CWD}/test/js/generated-content.html
+- action: block
+  conditions:
+  - window: win1
+    status: complete
+- action: plot-check
+  window: win1
+  checks:
+  - text-contains: '[note]'
+  - text-contains: '[end]'
+  - text-contains: attribute label
+  - text-at:
+      text: '[note]'
+      x: 8
+      y: 32
+  - text-at:
+      text: body text
+      x: 97
+      y: 32
+  - text-at:
+      text: '[end]'
+      x: 212
+      y: 32
+- action: quit

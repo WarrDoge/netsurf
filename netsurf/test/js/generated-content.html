@@ -1,0 +1,14 @@
+<html>
+  <head>
+    <title>generated content test</title>
+    <style>
+      p.marked::before { content: "[note] "; }
+      p.marked::after { content: " [end]"; }
+      div.labelled::before { content: attr(data-label); display: block; }
+    </style>
+  </head>
+  <body>
+    <p class="marked">body text</p>
+    <div class="labelled" data-label="attribute label">div text</div>
+  </body>
+</html>

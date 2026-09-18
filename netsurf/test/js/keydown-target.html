@@ -1,0 +1,17 @@
+<html>
+  <head>
+    <title>keydown target test</title>
+  </head>
+  <body>
+    <input id="i" value="ab">
+    <div id="log">no key yet</div>
+    <script>
+      document.getElementById("i").addEventListener("keydown", function (e) {
+        var log = document.getElementById("log");
+        log.removeChild(log.firstChild);
+        log.appendChild(document.createTextNode("keydown at input"));
+        e.preventDefault();
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+<html>
+  <head>
+    <title>mouse event test</title>
+  </head>
+  <body>
+    <div id="t">target area</div>
+    <div id="log">seen:</div>
+    <script>
+      var log = document.getElementById("log");
+      function note(name) {
+        log.appendChild(document.createTextNode(" " + name));
+      }
+      var t = document.getElementById("t");
+      t.addEventListener("mouseover", function () { note("over"); });
+      t.addEventListener("mousedown", function () { note("down"); });
+      t.addEventListener("mouseup", function () { note("up"); });
+    </script>
+  </body>
+</html>

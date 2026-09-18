@@ -1179,37 +1179,162 @@ bool html_redraw_box(const html_content *html, struct box *box,
  * \return true if successful, false otherwise
  */
 
+/**
+ * Whether a box is positioned, and so paints over its in-flow siblings.
+ */
+static bool html_redraw_box_is_positioned(const struct box *box)
+{
+	if (box->style == NULL) {
+		return false;
+	}
+
+	switch (css_computed_position(box->style)) {
+	case CSS_POSITION_RELATIVE:
+	case CSS_POSITION_ABSOLUTE:
+	case CSS_POSITION_FIXED:
+	case CSS_POSITION_STICKY:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+
+/**
+ * A positioned box's z-index.  auto paints with the zeroes, as it should.
+ */
+static int html_redraw_box_z_index(const struct box *box)
+{
+	int32_t index = 0;
+
+	if (box->style == NULL ||
+	    css_computed_z_index(box->style, &index) != CSS_Z_INDEX_SET) {
+		return 0;
+	}
+
+	/* libcss types this an integer and stores it fixed point */
+	return FIXTOINT(index);
+}
+
+
+/**
+ * Draw the positioned children whose z-index falls in a range, lowest first.
+ *
+ * The siblings are walked once per distinct z-index, which keeps the boxes
+ * at each level in document order without sorting them or allocating
+ * anything.  Pages have very few distinct levels.
+ *
+ * \param below  true for the levels below the in-flow content, which is
+ *               everything negative, false for the rest
+ */
+static bool html_redraw_box_positioned(const html_content *html,
+		struct box *box, bool below, int x, int y,
+		const struct rect *clip, float scale,
+		colour current_background_color,
+		const struct redraw_context *ctx)
+{
+	bool have_level = false;
+	struct box *c;
+	int level = 0;
+
+	for (c = box->children; c; c = c->next) {
+		int z;
+
+		if (!html_redraw_box_is_positioned(c)) {
+			continue;
+		}
+
+		z = html_redraw_box_z_index(c);
+		if ((z < 0) != below) {
+			continue;
+		}
+
+		if (!have_level || z < level) {
+			level = z;
+			have_level = true;
+		}
+	}
+
+	while (have_level) {
+		bool have_next = false;
+		int next_level = 0;
+
+		for (c = box->children; c; c = c->next) {
+			int z;
+
+			if (!html_redraw_box_is_positioned(c)) {
+				continue;
+			}
+
+			z = html_redraw_box_z_index(c);
+			if ((z < 0) != below) {
+				continue;
+			}
+
+			if (z == level) {
+				if (!html_redraw_box(html, c, x, y, clip,
+						scale,
+						current_background_color,
+						ctx)) {
+					return false;
+				}
+			} else if (z > level &&
+				   (!have_next || z < next_level)) {
+				next_level = z;
+				have_next = true;
+			}
+		}
+
+		level = next_level;
+		have_level = have_next;
+	}
+
+	return true;
+}
+
+
 static bool html_redraw_box_children(const html_content *html, struct box *box,
 		int x_parent, int y_parent,
 		const struct rect *clip, float scale,
 		colour current_background_color,
 		const struct redraw_context *ctx)
 {
+	int x = x_parent + box->x - scrollbar_get_offset(box->scroll_x);
+	int y = y_parent + box->y - scrollbar_get_offset(box->scroll_y);
 	struct box *c;
 
-	for (c = box->children; c; c = c->next) {
-
-		if (c->type != BOX_FLOAT_LEFT && c->type != BOX_FLOAT_RIGHT)
-			if (!html_redraw_box(html, c,
-					x_parent + box->x -
-					scrollbar_get_offset(box->scroll_x),
-					y_parent + box->y -
-					scrollbar_get_offset(box->scroll_y),
-					clip, scale, current_background_color,
-					ctx))
-				return false;
+	/* Painting order: whatever asked to go below, then the in-flow
+	 * children, then the floats, then everything positioned -- a
+	 * positioned box paints over its in-flow siblings whatever order
+	 * they were written in.
+	 */
+	if (!html_redraw_box_positioned(html, box, true, x, y, clip, scale,
+			current_background_color, ctx)) {
+		return false;
 	}
-	for (c = box->float_children; c; c = c->next_float)
-		if (!html_redraw_box(html, c,
-				x_parent + box->x -
-				scrollbar_get_offset(box->scroll_x),
-				y_parent + box->y -
-				scrollbar_get_offset(box->scroll_y),
-				clip, scale, current_background_color,
-				ctx))
-			return false;
 
-	return true;
+	for (c = box->children; c; c = c->next) {
+		if (c->type == BOX_FLOAT_LEFT || c->type == BOX_FLOAT_RIGHT ||
+		    html_redraw_box_is_positioned(c)) {
+			continue;
+		}
+
+		if (!html_redraw_box(html, c, x, y, clip, scale,
+				current_background_color, ctx)) {
+			return false;
+		}
+	}
+
+	for (c = box->float_children; c; c = c->next_float) {
+		if (!html_redraw_box(html, c, x, y, clip, scale,
+				current_background_color, ctx)) {
+			return false;
+		}
+	}
+
+	return html_redraw_box_positioned(html, box, false, x, y, clip, scale,
+			current_background_color, ctx);
 }
 
 /**

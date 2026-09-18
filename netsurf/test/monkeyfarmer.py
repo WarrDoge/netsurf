@@ -441,6 +441,9 @@ class BrowserWindow:
     def click(self, x, y, button="LEFT", kind="SINGLE"):
         self.browser.farmer.tell_monkey("WINDOW CLICK WIN %s X %s Y %s BUTTON %s KIND %s" % (self.winid, x, y, button, kind))
 
+    def key(self, code):
+        self.browser.farmer.tell_monkey("WINDOW KEY WIN %s CODE %s" % (self.winid, code))
+
     def js_exec(self, src):
         self.browser.farmer.tell_monkey("WINDOW EXEC WIN %s %s" % (self.winid, src))
 

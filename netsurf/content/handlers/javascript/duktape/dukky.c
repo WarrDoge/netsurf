@@ -33,6 +33,9 @@
 #include "utils/log.h"
 #include "utils/corestrings.h"
 #include "content/content.h"
+#include "content/llcache.h"
+#include "utils/nsurl.h"
+#include "html/private.h"
 
 #include "javascript/js.h"
 #include "javascript/content.h"
@@ -47,6 +50,8 @@
 #include <dom/dom.h>
 
 #define EVENT_MAGIC MAGIC(EVENT_MAP)
+#define HOST_FETCHES MAGIC(HostFetches)
+#define HTMLC_MAGIC MAGIC(HtmlContent)
 #define HANDLER_LISTENER_MAGIC MAGIC(HANDLER_LISTENER_MAP)
 #define HANDLER_MAGIC MAGIC(HANDLER_MAP)
 #define EVENT_LISTENER_JS_MAGIC MAGIC(EVENT_LISTENER_JS_MAP)
@@ -648,6 +653,12 @@ void js_destroyheap(jsheap *heap)
 #define CTX (ret->ctx)
 
 /* exported interface documented in js.h */
+/* Defined below, with the rest of the script fetch machinery */
+static duk_ret_t dukky_host_fetch(duk_context *ctx);
+static duk_ret_t dukky_host_fetch_abort(duk_context *ctx);
+static duk_ret_t dukky_host_colour_scheme(duk_context *ctx);
+static duk_ret_t dukky_host_resolve_url(duk_context *ctx);
+
 nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **thread)
 {
 	jsthread *ret;
@@ -696,6 +707,14 @@ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **th
 	duk_push_object(CTX);
 	duk_put_global_string(CTX, EVENT_MAGIC);
 
+	/* The content, for resolving a script's fetches against the
+	 * document, and the table those fetches keep their callbacks alive in
+	 */
+	duk_push_pointer(CTX, doc_priv);
+	duk_put_global_string(CTX, HTMLC_MAGIC);
+	duk_push_object(CTX);
+	duk_put_global_string(CTX, HOST_FETCHES);
+
 	/* Now load the polyfills */
 	/* ... */
 	duk_push_string(CTX, "polyfill.js");
@@ -733,7 +752,23 @@ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **th
 	/* ..., exports, install */
 	duk_push_global_object(CTX);
 	/* ..., exports, install, Win */
-	if (dukky_pcall(CTX, 1, true) != 0) {
+
+	/* The host side of the polyfills: what they cannot do in script.
+	 * Handed over rather than made global, so that a page cannot reach
+	 * the raw fetch behind XMLHttpRequest.
+	 */
+	duk_push_object(CTX);
+	duk_push_c_function(CTX, dukky_host_fetch, 4);
+	duk_put_prop_string(CTX, -2, "fetch");
+	duk_push_c_function(CTX, dukky_host_fetch_abort, 1);
+	duk_put_prop_string(CTX, -2, "abortFetch");
+	duk_push_c_function(CTX, dukky_host_colour_scheme, 0);
+	duk_put_prop_string(CTX, -2, "colourScheme");
+	duk_push_c_function(CTX, dukky_host_resolve_url, 2);
+	duk_put_prop_string(CTX, -2, "resolveUrl");
+	/* ..., exports, install, Win, host */
+
+	if (dukky_pcall(CTX, 2, true) != 0) {
 		NSLOG(dukky, CRITICAL,
 		      "Unable to install polyfills, thread aborted");
 		js_destroythread(ret);
@@ -830,12 +865,336 @@ nserror js_closethread(jsthread *thread)
 /**
  * Destroy a Duktape thread
  */
+/**
+ * A fetch a script asked for, running underneath XMLHttpRequest and fetch().
+ *
+ * The JS callback is held in a table on the global object rather than here,
+ * because a value this struct merely points at is not reachable and duktape
+ * would collect it while the fetch was still in the air.
+ */
+typedef struct dukky_fetch {
+	struct dukky_fetch *next;
+	duk_context *ctx;
+	llcache_handle *llh;
+	duk_int_t handle;
+} dukky_fetch;
+
+static dukky_fetch *dukky_fetches = NULL;
+static duk_int_t dukky_next_fetch_handle = 0;
+
+
+/**
+ * Drop a fetch, and the JS callback that was waiting on it.
+ */
+static void dukky_fetch_free(dukky_fetch *fetch)
+{
+	dukky_fetch **prev = &dukky_fetches;
+
+	while ((*prev != NULL) && (*prev != fetch)) {
+		prev = &(*prev)->next;
+	}
+	if (*prev == fetch) {
+		*prev = fetch->next;
+	}
+
+	if (fetch->llh != NULL) {
+		llcache_handle_abort(fetch->llh);
+		llcache_handle_release(fetch->llh);
+	}
+
+	duk_get_global_string(fetch->ctx, HOST_FETCHES);
+	if (duk_is_object(fetch->ctx, -1)) {
+		duk_push_int(fetch->ctx, fetch->handle);
+		duk_del_prop(fetch->ctx, -2);
+	}
+	duk_pop(fetch->ctx);
+
+	free(fetch);
+}
+
+
+/**
+ * Hand a finished fetch to the script that asked for it.
+ *
+ * The callback takes (ok, status, headers, body).  A fetch that never got a
+ * response reports ok false, which is all a script can be told about it:
+ * there is no way to distinguish a refused connection from a bad name here.
+ */
+static void dukky_fetch_report(dukky_fetch *fetch, bool ok)
+{
+	duk_context *ctx = fetch->ctx;
+	const uint8_t *body = NULL;
+	const char *type;
+	size_t body_len = 0;
+	long status = 0;
+
+	duk_get_global_string(ctx, HOST_FETCHES);
+	duk_push_int(ctx, fetch->handle);
+	duk_get_prop(ctx, -2);
+	/* ..., fetches, callback */
+
+	if (!duk_is_function(ctx, -1)) {
+		duk_pop_2(ctx);
+		dukky_fetch_free(fetch);
+		return;
+	}
+
+	if (ok) {
+		body = llcache_handle_get_source_data(fetch->llh, &body_len);
+		status = llcache_handle_get_http_code(fetch->llh);
+		type = llcache_handle_get_header(fetch->llh, "Content-Type");
+	} else {
+		type = NULL;
+	}
+
+	duk_push_boolean(ctx, ok);
+	duk_push_int(ctx, (duk_int_t)status);
+	if (type != NULL) {
+		duk_push_string(ctx, type);
+	} else {
+		duk_push_string(ctx, "");
+	}
+	duk_push_lstring(ctx, (const char *)body, body_len);
+	/* ..., fetches, callback, ok, status, type, body */
+
+	if (dukky_pcall(ctx, 4, true) != 0) {
+		NSLOG(dukky, DEBUG, "Error delivering a fetch to script");
+	}
+	duk_pop_2(ctx);
+
+	dukky_run_microtasks(ctx);
+
+	dukky_fetch_free(fetch);
+}
+
+
+static nserror dukky_fetch_callback(llcache_handle *handle,
+		const llcache_event *event, void *pw)
+{
+	dukky_fetch *fetch = pw;
+
+	switch (event->type) {
+	case LLCACHE_EVENT_DONE:
+		dukky_fetch_report(fetch, true);
+		break;
+
+	case LLCACHE_EVENT_ERROR:
+		dukky_fetch_report(fetch, false);
+		break;
+
+	default:
+		break;
+	}
+
+	return NSERROR_OK;
+}
+
+
+/**
+ * Start a fetch on behalf of script.
+ *
+ * Arguments are (url, method, body, callback); the url is resolved against
+ * the document.  Returns a handle the script can abort with.
+ */
+static duk_ret_t dukky_host_fetch(duk_context *ctx)
+{
+	llcache_post_data post;
+	llcache_post_data *post_ptr = NULL;
+	html_content *htmlc;
+	dukky_fetch *fetch;
+	const char *method;
+	const char *body;
+	nsurl *url = NULL;
+	nserror err;
+
+	duk_get_global_string(ctx, HTMLC_MAGIC);
+	htmlc = duk_get_pointer(ctx, -1);
+	duk_pop(ctx);
+
+	if (htmlc == NULL || !duk_is_function(ctx, 3)) {
+		return 0;
+	}
+
+	err = nsurl_join(htmlc->base_url, duk_safe_to_string(ctx, 0), &url);
+	if (err != NSERROR_OK) {
+		return 0;
+	}
+
+	method = duk_safe_to_string(ctx, 1);
+	body = duk_is_string(ctx, 2) ? duk_get_string(ctx, 2) : NULL;
+
+	/* llcache decides GET or POST by whether there is post data, so a
+	 * body is what makes this anything other than a GET.  There is no
+	 * way through this interface to send one any other way, which is
+	 * why the method is only looked at to rule a body out.
+	 */
+	if ((body != NULL) && (strcasecmp(method, "GET") != 0)) {
+		post.type = LLCACHE_POST_URL_ENCODED;
+		post.data.urlenc = strdup(body);
+		if (post.data.urlenc == NULL) {
+			nsurl_unref(url);
+			return 0;
+		}
+		post_ptr = &post;
+	}
+
+	fetch = calloc(1, sizeof(*fetch));
+	if (fetch == NULL) {
+		if (post_ptr != NULL) {
+			free(post.data.urlenc);
+		}
+		nsurl_unref(url);
+		return 0;
+	}
+
+	fetch->ctx = ctx;
+	fetch->handle = dukky_next_fetch_handle++;
+	fetch->next = dukky_fetches;
+	dukky_fetches = fetch;
+
+	/* Root the callback for as long as the fetch lives */
+	duk_get_global_string(ctx, HOST_FETCHES);
+	duk_push_int(ctx, fetch->handle);
+	duk_dup(ctx, 3);
+	duk_put_prop(ctx, -3);
+	duk_pop(ctx);
+
+	err = llcache_handle_retrieve(url, LLCACHE_RETRIEVE_NO_ERROR_PAGES,
+			NULL, post_ptr, dukky_fetch_callback, fetch,
+			&fetch->llh);
+
+	nsurl_unref(url);
+	if (post_ptr != NULL) {
+		free(post.data.urlenc);
+	}
+
+	if (err != NSERROR_OK) {
+		fetch->llh = NULL;
+		dukky_fetch_report(fetch, false);
+		return 0;
+	}
+
+	duk_push_int(ctx, fetch->handle);
+	return 1;
+}
+
+
+/**
+ * Resolve a url the way the document would, and hand back the result.
+ *
+ * Takes the url and an optional base; without a base the document's own is
+ * used.  Script has no url parser of its own, and writing a second one in
+ * JavaScript to disagree with this one helps nobody.
+ */
+static duk_ret_t dukky_host_resolve_url(duk_context *ctx)
+{
+	html_content *htmlc;
+	nsurl *base = NULL;
+	nsurl *url = NULL;
+	nserror err;
+
+	duk_get_global_string(ctx, HTMLC_MAGIC);
+	htmlc = duk_get_pointer(ctx, -1);
+	duk_pop(ctx);
+
+	if (htmlc == NULL) {
+		return 0;
+	}
+
+	if (duk_is_string(ctx, 1)) {
+		if (nsurl_create(duk_get_string(ctx, 1), &base) != NSERROR_OK) {
+			return 0;
+		}
+	} else {
+		base = nsurl_ref(htmlc->base_url);
+	}
+
+	err = nsurl_join(base, duk_safe_to_string(ctx, 0), &url);
+	nsurl_unref(base);
+
+	if (err != NSERROR_OK) {
+		return 0;
+	}
+
+	duk_push_string(ctx, nsurl_access(url));
+	nsurl_unref(url);
+
+	return 1;
+}
+
+
+/**
+ * The colour scheme the page is being rendered for.
+ */
+static duk_ret_t dukky_host_colour_scheme(duk_context *ctx)
+{
+	html_content *htmlc;
+
+	duk_get_global_string(ctx, HTMLC_MAGIC);
+	htmlc = duk_get_pointer(ctx, -1);
+	duk_pop(ctx);
+
+	if ((htmlc != NULL) && (htmlc->media.prefers_color_scheme != NULL)) {
+		duk_push_lstring(ctx,
+			lwc_string_data(htmlc->media.prefers_color_scheme),
+			lwc_string_length(htmlc->media.prefers_color_scheme));
+	} else {
+		duk_push_string(ctx, "light");
+	}
+
+	return 1;
+}
+
+
+/**
+ * Abort a fetch a script has given up on.
+ */
+static duk_ret_t dukky_host_fetch_abort(duk_context *ctx)
+{
+	duk_int_t handle = duk_to_int(ctx, 0);
+	dukky_fetch *fetch;
+
+	for (fetch = dukky_fetches; fetch != NULL; fetch = fetch->next) {
+		if ((fetch->ctx == ctx) && (fetch->handle == handle)) {
+			dukky_fetch_free(fetch);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+
+/**
+ * Drop every fetch belonging to a context that is going away.
+ */
+static void dukky_fetch_abort_context(duk_context *ctx)
+{
+	dukky_fetch *fetch = dukky_fetches;
+
+	while (fetch != NULL) {
+		dukky_fetch *next = fetch->next;
+
+		if (fetch->ctx == ctx) {
+			dukky_fetch_free(fetch);
+		}
+
+		fetch = next;
+	}
+}
+
+
 static void dukky_destroythread(jsthread *thread)
 {
 	jsheap *heap = thread->heap;
 
 	assert(thread->in_use == 0);
 	assert(thread->pending_destroy == true);
+
+	/* Anything still fetching for this thread has nobody left to give
+	 * its answer to
+	 */
+	dukky_fetch_abort_context(CTX);
 
 	/* Closing down the extant thread */
 	NSLOG(dukky, DEBUG, "Closing down extant thread %p in heap %p", thread, heap);

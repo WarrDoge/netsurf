@@ -25,6 +25,7 @@
 #include <dom/dom.h>
 
 #include "utils/config.h"
+#include "utils/corestrings.h"
 #include "utils/log.h"
 #include "utils/messages.h"
 #include "netsurf/keypress.h"
@@ -62,7 +63,10 @@ nserror box_textarea_keypress(html_content *html, struct box *box, uint32_t key)
 	switch (key) {
 	case NS_KEY_NL:
 	case NS_KEY_CR:
-		if (form) {
+		if ((form != NULL) &&
+		    fire_generic_dom_event(corestring_dom_submit,
+					   (dom_node *)form->node,
+					   true, true)) {
 			res = form_submit(content_get_url(c),
 					  html->bw,
 					  form,
@@ -248,6 +252,11 @@ static void box_textarea_callback(void *data, struct textarea_msg *msg)
 		form_gadget_update_value(gadget,
 					 strndup(msg->data.modified.text,
 						 msg->data.modified.len));
+		if (d->setting_text == false) {
+			fire_generic_dom_event(corestring_dom_input,
+					       (dom_node *)gadget->node,
+					       true, false);
+		}
 		break;
 	}
 }
@@ -261,6 +270,7 @@ bool box_textarea_create_textarea(html_content *html,
 	dom_exception err;
 	textarea_setup ta_setup;
 	textarea_flags ta_flags;
+	bool ok;
 	plot_font_style_t fstyle = {
 		.family = PLOT_FONT_FAMILY_SANS_SERIF,
 		.size = 10 * PLOT_STYLE_SCALE,
@@ -364,8 +374,9 @@ bool box_textarea_create_textarea(html_content *html,
 		return false;
 	}
 
-	if (!textarea_set_text(gadget->data.text.ta, text))
-		return false;
+	gadget->data.text.data.setting_text = true;
+	ok = textarea_set_text(gadget->data.text.ta, text);
+	gadget->data.text.data.setting_text = false;
 
-	return true;
+	return ok;
 }

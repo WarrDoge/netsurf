@@ -1,0 +1,16 @@
+<html>
+  <head>
+    <title>input event test</title>
+  </head>
+  <body>
+    <input id="i" value="ab">
+    <div id="log">no input yet</div>
+    <script>
+      document.getElementById("i").addEventListener("input", function () {
+        var log = document.getElementById("log");
+        log.removeChild(log.firstChild);
+        log.appendChild(document.createTextNode("input fired"));
+      });
+    </script>
+  </body>
+</html>

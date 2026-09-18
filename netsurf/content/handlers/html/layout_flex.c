@@ -53,6 +53,7 @@ struct flex_item_data {
 
 	css_fixed shrink;
 	css_fixed grow;
+	int32_t order;
 
 	int min_main;
 	int max_main;
@@ -426,8 +427,34 @@ static void layout_flex_ctx__populate_item_data(
 
 		css_computed_flex_shrink(b->style, &item->shrink);
 		css_computed_flex_grow(b->style, &item->grow);
+		css_computed_order(b->style, &item->order);
 
 		layout_flex__base_and_main_sizes(ctx, item, available_width);
+	}
+}
+
+/**
+ * Order the items for layout.
+ *
+ * `order` moves an item within the container without moving it in the
+ * document.  Items sharing an order value keep the order they were written
+ * in, so the sort has to be stable; there are few enough items that an
+ * insertion sort is the whole of it.
+ *
+ * \param[in] ctx  Flex layout context
+ */
+static void layout_flex_ctx__order_items(struct flex_ctx *ctx)
+{
+	for (size_t i = 1; i < ctx->item.count; i++) {
+		struct flex_item_data item = ctx->item.data[i];
+		size_t j = i;
+
+		while (j > 0 && ctx->item.data[j - 1].order > item.order) {
+			ctx->item.data[j] = ctx->item.data[j - 1];
+			j--;
+		}
+
+		ctx->item.data[j] = item;
 	}
 }
 
@@ -864,6 +891,57 @@ static bool layout_flex__resolve_line(
 }
 
 /**
+ * Split a line's free main-axis space the way justify-content asks.
+ *
+ * \param[in]  ctx         Flex layout context
+ * \param[in]  count       Number of in-flow items on the line
+ * \param[in]  free_main   Free space on the line, always positive
+ * \param[out] lead        Returns the space before the first item
+ * \param[out] between     Returns the space added between neighbours
+ */
+static void layout_flex__justify_content(
+		const struct flex_ctx *ctx,
+		size_t count,
+		int free_main,
+		int *lead,
+		int *between)
+{
+	switch (css_computed_justify_content(ctx->flex->style)) {
+	case CSS_JUSTIFY_CONTENT_FLEX_END:
+		*lead = free_main;
+		break;
+
+	case CSS_JUSTIFY_CONTENT_CENTER:
+		*lead = free_main / 2;
+		break;
+
+	case CSS_JUSTIFY_CONTENT_SPACE_BETWEEN:
+		if (count > 1) {
+			*between = free_main / (int)(count - 1);
+		}
+		break;
+
+	case CSS_JUSTIFY_CONTENT_SPACE_AROUND:
+		if (count > 0) {
+			*between = free_main / (int)count;
+			*lead = *between / 2;
+		}
+		break;
+
+	case CSS_JUSTIFY_CONTENT_SPACE_EVENLY:
+		if (count > 0) {
+			*between = free_main / (int)(count + 1);
+			*lead = *between;
+		}
+		break;
+
+	default:
+		/* flex-start, and anything a line of one item cannot show */
+		break;
+	}
+}
+
+/**
  * Position items along a line
  *
  * \param[in] ctx   Flex layout context
@@ -877,13 +955,23 @@ static bool layout_flex__place_line_items_main(
 	int main_pos = ctx->flex->padding[layout_flex__main_start_side(ctx)];
 	int post_multiplier = ctx->main_reversed ? 0 : 1;
 	int pre_multiplier = ctx->main_reversed ? -1 : 0;
+	int step = pre_multiplier + post_multiplier;
 	size_t item_count = line->first + line->count;
+	size_t flow_count = 0;
 	int extra_remainder = 0;
 	int extra = 0;
+	int between = 0;
+	int lead = 0;
 
 	if (ctx->main_reversed) {
 		main_pos = lh__box_size_main(ctx->horizontal, ctx->flex) -
 				main_pos;
+	}
+
+	for (size_t i = line->first; i < item_count; i++) {
+		if (!lh__box_is_absolute(ctx->item.data[i].box)) {
+			flow_count++;
+		}
 	}
 
 	if (ctx->available_main != AUTO &&
@@ -894,8 +982,27 @@ static bool layout_flex__place_line_items_main(
 
 			extra_remainder = extra % line->main_auto_margin_count;
 			extra /= line->main_auto_margin_count;
+		} else {
+			/* An auto margin takes the free space before
+			 * justify-content is even looked at, so this is the
+			 * only case the property has a say in.
+			 */
+			int free_main = ctx->available_main -
+					line->used_main_size;
+
+			if (flow_count > 1) {
+				free_main -= (int)(flow_count - 1) *
+						ctx->main_gap;
+			}
+
+			if (free_main > 0) {
+				layout_flex__justify_content(ctx, flow_count,
+						free_main, &lead, &between);
+			}
 		}
 	}
+
+	main_pos += step * lead;
 
 	for (size_t i = line->first; i < item_count; i++) {
 		enum box_side main_end = ctx->horizontal ? RIGHT : BOTTOM;
@@ -953,12 +1060,10 @@ static bool layout_flex__place_line_items_main(
 			}
 
 			if (i + 1 < item_count) {
-				/* pre_multiplier + post_multiplier is +1
-				 * forwards and -1 reversed, so this steps
-				 * the pen the right way for both
+				/* step is +1 forwards and -1 reversed, so
+				 * this moves the pen the right way for both
 				 */
-				main_pos += (pre_multiplier + post_multiplier) *
-						ctx->main_gap;
+				main_pos += step * (ctx->main_gap + between);
 			}
 		}
 	}
@@ -1090,17 +1195,56 @@ static void layout_flex__place_lines(struct flex_ctx *ctx)
 	int line_pos = reversed ? ctx->cross_size : 0;
 	int post_multiplier = reversed ? 0 : 1;
 	int pre_multiplier = reversed ? -1 : 0;
+	int step = pre_multiplier + post_multiplier;
 	int extra_remainder = 0;
 	int extra = 0;
+	int between = 0;
+	int lead = 0;
 
 	if (ctx->available_cross != AUTO &&
 	    ctx->available_cross > ctx->cross_size &&
 	    ctx->line.count > 0) {
-		extra = ctx->available_cross - ctx->cross_size;
+		int free_cross = ctx->available_cross - ctx->cross_size;
+		int count = (int)ctx->line.count;
 
-		extra_remainder = extra % ctx->line.count;
-		extra /= ctx->line.count;
+		switch (css_computed_align_content(ctx->flex->style)) {
+		case CSS_ALIGN_CONTENT_FLEX_START:
+			break;
+
+		case CSS_ALIGN_CONTENT_FLEX_END:
+			lead = free_cross;
+			break;
+
+		case CSS_ALIGN_CONTENT_CENTER:
+			lead = free_cross / 2;
+			break;
+
+		case CSS_ALIGN_CONTENT_SPACE_BETWEEN:
+			if (count > 1) {
+				between = free_cross / (count - 1);
+			}
+			break;
+
+		case CSS_ALIGN_CONTENT_SPACE_AROUND:
+			between = free_cross / count;
+			lead = between / 2;
+			break;
+
+		case CSS_ALIGN_CONTENT_SPACE_EVENLY:
+			between = free_cross / (count + 1);
+			lead = between;
+			break;
+
+		default:
+			/* stretch: the lines take the space themselves */
+			extra = free_cross;
+			extra_remainder = extra % count;
+			extra /= count;
+			break;
+		}
 	}
+
+	line_pos += step * lead;
 
 	for (size_t i = 0; i < ctx->line.count; i++) {
 		struct flex_line_data *line = &ctx->line.data[i];
@@ -1111,8 +1255,7 @@ static void layout_flex__place_lines(struct flex_ctx *ctx)
 				extra + extra_remainder;
 
 		if (i + 1 < ctx->line.count) {
-			line_pos += (pre_multiplier + post_multiplier) *
-					ctx->cross_gap;
+			line_pos += step * (ctx->cross_gap + between);
 		}
 
 		layout_flex__place_line_items_cross(ctx, line,
@@ -1170,6 +1313,7 @@ bool layout_flex(struct box *flex, int available_width,
 			flex, ctx->available_cross);
 
 	layout_flex_ctx__populate_item_data(ctx, flex, available_width);
+	layout_flex_ctx__order_items(ctx);
 
 	/* Place items onto lines. */
 	success = layout_flex__collect_items_into_lines(ctx);
