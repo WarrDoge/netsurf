@@ -1899,6 +1899,208 @@ var NetSurfMedia = (function () {
   };
 }());
 
+
+/* URL and URLSearchParams.
+ *
+ * The parsing is here but the resolving is not: a relative url is handed to
+ * the host, which runs it through the same parser the browser navigates
+ * with, so script and browser cannot disagree about where a link points.
+ */
+var NetSurfURL = (function () {
+  var PARTS = new RegExp(
+    '^([a-z][a-z0-9+.-]*:)' +
+    '(?://(?:([^:@/]*)(?::([^@/]*))?@)?([^:/?#]*)(?::(\\d+))?)?' +
+    '([^?#]*)' +
+    '(\\?[^#]*)?' +
+    '(#.*)?$', 'i');
+
+  function URLSearchParams(init) {
+    this._entries = [];
+
+    if (init instanceof URLSearchParams) {
+      this._entries = init._entries.slice();
+    } else if (typeof init === 'string') {
+      init.replace(/^\?/, '').split('&').forEach(function (pair) {
+        var eq;
+
+        if (pair.length === 0) {
+          return;
+        }
+
+        eq = pair.indexOf('=');
+        if (eq < 0) {
+          this._entries.push([decode(pair), '']);
+        } else {
+          this._entries.push([decode(pair.slice(0, eq)),
+                              decode(pair.slice(eq + 1))]);
+        }
+      }, this);
+    } else if (init !== undefined && init !== null) {
+      Object.keys(init).forEach(function (name) {
+        this._entries.push([name, String(init[name])]);
+      }, this);
+    }
+  }
+
+  function decode(text) {
+    try {
+      return decodeURIComponent(text.replace(/\+/g, ' '));
+    } catch (e) {
+      return text;
+    }
+  }
+
+  function encode(text) {
+    return encodeURIComponent(text).replace(/%20/g, '+');
+  }
+
+  URLSearchParams.prototype.append = function (name, value) {
+    this._entries.push([String(name), String(value)]);
+  };
+
+  URLSearchParams.prototype.set = function (name, value) {
+    this['delete'](name);
+    this.append(name, value);
+  };
+
+  URLSearchParams.prototype.get = function (name) {
+    var all = this.getAll(name);
+    return all.length > 0 ? all[0] : null;
+  };
+
+  URLSearchParams.prototype.getAll = function (name) {
+    var key = String(name);
+    return this._entries.filter(function (e) {
+      return e[0] === key;
+    }).map(function (e) {
+      return e[1];
+    });
+  };
+
+  URLSearchParams.prototype.has = function (name) {
+    return this.getAll(name).length > 0;
+  };
+
+  URLSearchParams.prototype['delete'] = function (name) {
+    var key = String(name);
+    this._entries = this._entries.filter(function (e) {
+      return e[0] !== key;
+    });
+  };
+
+  URLSearchParams.prototype.forEach = function (fn, self) {
+    this._entries.forEach(function (e) {
+      fn.call(self, e[1], e[0], this);
+    }, this);
+  };
+
+  URLSearchParams.prototype.toString = function () {
+    return this._entries.map(function (e) {
+      return encode(e[0]) + '=' + encode(e[1]);
+    }).join('&');
+  };
+
+  function makeURL(host) {
+    function URL(input, base) {
+      var absolute = host.resolveUrl(String(input),
+                                     base === undefined ? undefined :
+                                     String(base));
+      var parts;
+
+      if (typeof absolute !== 'string') {
+        throw new TypeError('Invalid URL: ' + input);
+      }
+
+      parts = PARTS.exec(absolute);
+      if (parts === null) {
+        throw new TypeError('Invalid URL: ' + input);
+      }
+
+      this.protocol = parts[1] || '';
+      this.username = parts[2] || '';
+      this.password = parts[3] || '';
+      this.hostname = parts[4] || '';
+      this.port = parts[5] || '';
+      this.pathname = parts[6] || '';
+      this.hash = parts[8] || '';
+      this.searchParams = new URLSearchParams(parts[7] || '');
+    }
+
+    Object.defineProperty(URL.prototype, 'host', {
+      get: function () {
+        return this.port ? (this.hostname + ':' + this.port) : this.hostname;
+      },
+      configurable: true
+    });
+
+    Object.defineProperty(URL.prototype, 'origin', {
+      get: function () {
+        return this.hostname ? (this.protocol + '//' + this.host) : 'null';
+      },
+      configurable: true
+    });
+
+    Object.defineProperty(URL.prototype, 'search', {
+      get: function () {
+        var query = this.searchParams.toString();
+        return query.length > 0 ? ('?' + query) : '';
+      },
+      set: function (value) {
+        this.searchParams = new URLSearchParams(String(value));
+      },
+      configurable: true
+    });
+
+    /* Built rather than stored, so that a change to the path or to the
+     * parameters is there the next time the url is read back.
+     */
+    Object.defineProperty(URL.prototype, 'href', {
+      get: function () {
+        var authority = '';
+
+        if (this.hostname) {
+          authority = '//';
+          if (this.username) {
+            authority += this.username;
+            if (this.password) {
+              authority += ':' + this.password;
+            }
+            authority += '@';
+          }
+          authority += this.host;
+        }
+
+        return this.protocol + authority + this.pathname +
+               this.search + this.hash;
+      },
+      configurable: true
+    });
+
+    URL.prototype.toString = function () {
+      return this.href;
+    };
+
+    URL.prototype.toJSON = function () {
+      return this.href;
+    };
+
+    return URL;
+  }
+
+  return {
+    install: function (host) {
+      if (host === undefined || typeof host.resolveUrl !== 'function') {
+        return {};
+      }
+
+      return {
+        URL: makeURL(host),
+        URLSearchParams: URLSearchParams
+      };
+    }
+  };
+}());
+
 /* Hand the exports back as this program's completion value. Neither a var
  * binding nor a bare assignment made here reaches the object that page
  * scripts resolve names against, because the file is evaluated as an eval
@@ -1931,9 +2133,13 @@ var NetSurfMedia = (function () {
     globals.screen = NetSurfMedia.makeScreen(win);
 
     var network = NetSurfNetworking.install(host);
+    var urls = NetSurfURL.install(host);
 
     Object.keys(network).forEach(function (name) {
       globals[name] = network[name];
+    });
+    Object.keys(urls).forEach(function (name) {
+      globals[name] = urls[name];
     });
 
     return globals;

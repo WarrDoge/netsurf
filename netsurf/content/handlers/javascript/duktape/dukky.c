@@ -657,6 +657,7 @@ void js_destroyheap(jsheap *heap)
 static duk_ret_t dukky_host_fetch(duk_context *ctx);
 static duk_ret_t dukky_host_fetch_abort(duk_context *ctx);
 static duk_ret_t dukky_host_colour_scheme(duk_context *ctx);
+static duk_ret_t dukky_host_resolve_url(duk_context *ctx);
 
 nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **thread)
 {
@@ -763,6 +764,8 @@ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **th
 	duk_put_prop_string(CTX, -2, "abortFetch");
 	duk_push_c_function(CTX, dukky_host_colour_scheme, 0);
 	duk_put_prop_string(CTX, -2, "colourScheme");
+	duk_push_c_function(CTX, dukky_host_resolve_url, 2);
+	duk_put_prop_string(CTX, -2, "resolveUrl");
 	/* ..., exports, install, Win, host */
 
 	if (dukky_pcall(CTX, 2, true) != 0) {
@@ -1072,6 +1075,50 @@ static duk_ret_t dukky_host_fetch(duk_context *ctx)
 	}
 
 	duk_push_int(ctx, fetch->handle);
+	return 1;
+}
+
+
+/**
+ * Resolve a url the way the document would, and hand back the result.
+ *
+ * Takes the url and an optional base; without a base the document's own is
+ * used.  Script has no url parser of its own, and writing a second one in
+ * JavaScript to disagree with this one helps nobody.
+ */
+static duk_ret_t dukky_host_resolve_url(duk_context *ctx)
+{
+	html_content *htmlc;
+	nsurl *base = NULL;
+	nsurl *url = NULL;
+	nserror err;
+
+	duk_get_global_string(ctx, HTMLC_MAGIC);
+	htmlc = duk_get_pointer(ctx, -1);
+	duk_pop(ctx);
+
+	if (htmlc == NULL) {
+		return 0;
+	}
+
+	if (duk_is_string(ctx, 1)) {
+		if (nsurl_create(duk_get_string(ctx, 1), &base) != NSERROR_OK) {
+			return 0;
+		}
+	} else {
+		base = nsurl_ref(htmlc->base_url);
+	}
+
+	err = nsurl_join(base, duk_safe_to_string(ctx, 0), &url);
+	nsurl_unref(base);
+
+	if (err != NSERROR_OK) {
+		return 0;
+	}
+
+	duk_push_string(ctx, nsurl_access(url));
+	nsurl_unref(url);
+
 	return 1;
 }
 

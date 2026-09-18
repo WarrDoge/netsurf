@@ -1,0 +1,24 @@
+title: URL and URLSearchParams parse and resolve
+group: basic
+steps:
+- action: launch
+  launch-options:
+  - enable_javascript=1
+- action: window-new
+  tag: win1
+- action: navigate
+  window: win1
+  url: file://${CWD}/test/js/url-object.html
+- action: block
+  conditions:
+  - window: win1
+    status: complete
+- action: plot-check
+  window: win1
+  checks:
+  - text-contains: 'proto=https: host=example.org:8080 name=example.org port=8080'
+  - text-contains: 'path=/a/b hash=#frag origin=https://example.org:8080 x=9'
+  - text-contains: 'href=https://user:pw@example.org:8080/a/b?y=two&x=9#frag'
+  - text-contains: 'rel=https://example.org/a/c/d?z=9 p=hello world'
+  - text-contains: str=a=1&b=hello+world
+- action: quit

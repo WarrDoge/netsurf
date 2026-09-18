@@ -1,0 +1,29 @@
+<html>
+  <head>
+    <title>URL test</title>
+  </head>
+  <body>
+    <div id="log">unset</div>
+    <script>
+      var log = document.getElementById("log");
+      var u = new URL("https://user:pw@example.org:8080/a/b?x=1&y=two#frag");
+      var rel = new URL("../c/d?z=9", "https://example.org/a/b/e");
+      var params = new URLSearchParams("a=1&b=hello+world");
+      u.searchParams.set("x", "9");
+      var report = "proto=" + u.protocol +
+        " host=" + u.host +
+        " name=" + u.hostname +
+        " port=" + u.port +
+        " path=" + u.pathname +
+        " hash=" + u.hash +
+        " origin=" + u.origin +
+        " x=" + u.searchParams.get("x") +
+        " href=" + u.href +
+        " rel=" + rel.href +
+        " p=" + params.get("b") +
+        " str=" + params.toString();
+      log.removeChild(log.firstChild);
+      log.appendChild(document.createTextNode(report));
+    </script>
+  </body>
+</html>
