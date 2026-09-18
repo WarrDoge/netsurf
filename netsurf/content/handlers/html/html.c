@@ -211,6 +211,7 @@ bool fire_dom_keyboard_event(dom_string *type, dom_node *target,
 static void html_rebuild_box_tree(void *pw);
 static void html_rebuild_box_tree_done(html_content *c, bool success);
 static void html_clear_selection(struct content *c);
+static void html_free_forms(struct form *forms);
 
 /** How long to wait, in milliseconds, before retrying a rebuild that
  * the document was not yet settled enough to run. */
@@ -1226,6 +1227,24 @@ static void html_destroy(struct content *c)
 
 	selection_destroy(html->sel);
 
+	/* a rebuild caught in flight still owns the outgoing tree */
+	if (html->reflow_old.active) {
+		struct content_html_object *live_list = html->object_list;
+		unsigned int live_count = html->num_objects;
+
+		html_free_forms(html->reflow_old.forms);
+		html->object_list = html->reflow_old.object_list;
+		html->num_objects = html->reflow_old.num_objects;
+		html_object_free_objects(html);
+		html->object_list = live_list;
+		html->num_objects = live_count;
+
+		if (html->reflow_old.bctx != NULL) {
+			talloc_free(html->reflow_old.bctx);
+		}
+		memset(&html->reflow_old, 0, sizeof(html->reflow_old));
+	}
+
 	/* Destroy forms */
 	for (f = html->forms; f != NULL; f = g) {
 		g = f->prev;
@@ -1425,12 +1444,67 @@ static void html_clear_selection(struct content *c)
  * Release everything that names a box in the tree that is about to be
  * replaced.
  */
-static void html_release_box_tree(html_content *htmlc)
+static void html_free_forms(struct form *forms)
 {
 	struct form *f, *g;
 
+	/* Form controls are rebuilt from the DOM. What the user typed is
+	 * already there, because form_gadget_sync_with_dom writes every
+	 * edit back to the element.
+	 */
+	for (f = forms; f != NULL; f = g) {
+		g = f->prev;
+		form_free(f);
+	}
+}
+
+
+/**
+ * Set the current box tree aside so a replacement can be built.
+ *
+ * dom_to_box converts incrementally and only publishes the new tree when it
+ * finishes, so the old one has to stay drawable in the meantime. Everything
+ * the outgoing boxes own moves aside with them; what replaces it is built
+ * into a fresh talloc context.
+ */
+static void html_detach_box_tree(html_content *htmlc)
+{
+	htmlc->reflow_old.bctx = htmlc->bctx;
+	htmlc->reflow_old.forms = htmlc->forms;
+	htmlc->reflow_old.object_list = htmlc->object_list;
+	htmlc->reflow_old.num_objects = htmlc->num_objects;
+	htmlc->reflow_old.active = true;
+
+	/* the caret is a box pointer, but the element behind it survives */
+	if ((htmlc->focus_type == HTML_FOCUS_TEXTAREA) &&
+	    (htmlc->focus_owner.textarea != NULL) &&
+	    (htmlc->focus_owner.textarea->node != NULL) &&
+	    (htmlc->reflow_focus == NULL)) {
+		htmlc->reflow_focus = htmlc->focus_owner.textarea->node;
+		dom_node_ref(htmlc->reflow_focus);
+	}
+
+	htmlc->bctx = NULL;
+	htmlc->forms = NULL;
+	htmlc->object_list = NULL;
+	htmlc->num_objects = 0;
+}
+
+
+/**
+ * Free the set-aside box tree once its replacement is in place.
+ */
+static void html_discard_detached_box_tree(html_content *htmlc)
+{
+	struct content_html_object *live_list;
+	unsigned int live_count;
+
+	if (htmlc->reflow_old.active == false) {
+		return;
+	}
+
 	/* the selection, the drag target and the input focus all point at
-	 * boxes directly
+	 * boxes directly, and those boxes are the ones about to go
 	 */
 	html_clear_selection(&htmlc->base);
 
@@ -1442,43 +1516,141 @@ static void html_release_box_tree(html_content *htmlc)
 
 	htmlc->visible_select_menu = NULL;
 
+	/* imagemap_destroy frees the table without clearing the pointer, and
+	 * imagemap_create only allocates when it finds NULL
+	 */
 	imagemap_destroy(htmlc);
+	htmlc->imagemaps = NULL;
 
-	/* Form controls are rebuilt from the DOM. What the user typed is
-	 * already there, because form_gadget_sync_with_dom writes every
-	 * edit back to the element.
-	 */
-	for (f = htmlc->forms; f != NULL; f = g) {
-		g = f->prev;
-		form_free(f);
-	}
-	htmlc->forms = NULL;
+	html_free_forms(htmlc->reflow_old.forms);
 
-	/* Each object records the box that displays it. Releasing the
-	 * handles does not evict the underlying contents, so the rebuild
-	 * refetches them from the cache rather than the network.
+	/* Releasing the object handles does not evict the underlying
+	 * contents, so the rebuild refetches them from the cache rather than
+	 * the network.
 	 */
+	live_list = htmlc->object_list;
+	live_count = htmlc->num_objects;
+	htmlc->object_list = htmlc->reflow_old.object_list;
+	htmlc->num_objects = htmlc->reflow_old.num_objects;
 	html_object_free_objects(htmlc);
-	htmlc->num_objects = 0;
+	htmlc->object_list = live_list;
+	htmlc->num_objects = live_count;
 
-	html_free_layout(htmlc);
-	htmlc->bctx = NULL;
-	htmlc->layout = NULL;
-	htmlc->iframe = NULL;
+	if (htmlc->reflow_old.bctx != NULL) {
+		talloc_free(htmlc->reflow_old.bctx);
+	}
+
+	memset(&htmlc->reflow_old, 0, sizeof(htmlc->reflow_old));
+}
+
+
+/**
+ * Put the set-aside box tree back after a rebuild failed to produce one.
+ */
+static void html_restore_detached_box_tree(html_content *htmlc)
+{
+	if (htmlc->reflow_old.active == false) {
+		return;
+	}
+
+	/* discard whatever the abandoned conversion managed to build; it
+	 * never reached c->layout, which still names the old tree
+	 */
+	html_free_forms(htmlc->forms);
+	html_object_free_objects(htmlc);
+	if (htmlc->bctx != NULL) {
+		talloc_free(htmlc->bctx);
+	}
+
+	htmlc->bctx = htmlc->reflow_old.bctx;
+	htmlc->forms = htmlc->reflow_old.forms;
+	htmlc->object_list = htmlc->reflow_old.object_list;
+	htmlc->num_objects = htmlc->reflow_old.num_objects;
+
+	memset(&htmlc->reflow_old, 0, sizeof(htmlc->reflow_old));
 }
 
 
 /**
  * Finish a box tree rebuild and lay the new tree out.
  */
+static struct box *html_find_box_for_node(struct box *box, dom_node *node)
+{
+	struct box *child;
+	struct box *found;
+
+	if (box == NULL) {
+		return NULL;
+	}
+
+	if (box->node == node) {
+		return box;
+	}
+
+	for (child = box->children; child != NULL; child = child->next) {
+		found = html_find_box_for_node(child, node);
+		if (found != NULL) {
+			return found;
+		}
+	}
+
+	return NULL;
+}
+
+
+/**
+ * Put the caret back in the field it was in before a reflow.
+ *
+ * Setting the caret is what tells the rest of the browser where the focus
+ * is, so this restores both. The offset is not recoverable, and the field
+ * holds what the user has typed so far, so the caret goes to the end.
+ */
+static void html_restore_reflow_focus(html_content *htmlc)
+{
+	struct box *box;
+	struct textarea *ta;
+	int len;
+
+	if (htmlc->reflow_focus == NULL) {
+		return;
+	}
+
+	box = html_find_box_for_node(htmlc->layout, htmlc->reflow_focus);
+
+	dom_node_unref(htmlc->reflow_focus);
+	htmlc->reflow_focus = NULL;
+
+	if ((box == NULL) || (box->gadget == NULL)) {
+		return;
+	}
+
+	if ((box->gadget->type != GADGET_TEXTAREA) &&
+	    (box->gadget->type != GADGET_TEXTBOX) &&
+	    (box->gadget->type != GADGET_PASSWORD)) {
+		return;
+	}
+
+	ta = box->gadget->data.text.ta;
+	if (ta == NULL) {
+		return;
+	}
+
+	len = textarea_get_text(ta, NULL, 0);
+	textarea_set_caret(ta, (len > 0) ? len - 1 : 0);
+}
+
+
 static void html_rebuild_box_tree_done(html_content *c, bool success)
 {
 	c->box_conversion_context = NULL;
 
 	if ((success == false) || c->aborted || (c->layout == NULL)) {
 		NSLOG(netsurf, WARNING, "box rebuild failed");
+		html_restore_detached_box_tree(c);
 		return;
 	}
+
+	html_discard_detached_box_tree(c);
 
 	if (imagemap_extract(c) != NSERROR_OK) {
 		NSLOG(netsurf, WARNING, "imagemap extraction failed");
@@ -1487,6 +1659,8 @@ static void html_rebuild_box_tree_done(html_content *c, bool success)
 	content__reformat(&c->base, false,
 			c->base.available_width,
 			c->base.available_height);
+
+	html_restore_reflow_focus(c);
 }
 
 
@@ -1539,13 +1713,14 @@ static void html_rebuild_box_tree(void *pw)
 		return;
 	}
 
-	html_release_box_tree(htmlc);
+	html_detach_box_tree(htmlc);
 	nscss_invalidate_node_data(html);
 
 	error = dom_to_box(html, htmlc, html_rebuild_box_tree_done,
 			&htmlc->box_conversion_context);
 	if (error != NSERROR_OK) {
 		NSLOG(netsurf, WARNING, "box rebuild could not be started");
+		html_restore_detached_box_tree(htmlc);
 	}
 
 	dom_node_unref(html);

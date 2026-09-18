@@ -170,6 +170,18 @@ typedef struct html_content {
 	struct content_html_object *object_list;
 	/** Forms, in reverse order to document. */
 	struct form *forms;
+	/** Box tree a reflow is replacing. Kept alive and drawable until the
+	 * replacement is published, because the conversion is incremental. */
+	struct {
+		bool active;
+		int *bctx;
+		struct content_html_object *object_list;
+		unsigned int num_objects;
+		struct form *forms;
+	} reflow_old;
+	/** Element that held the caret when a reflow started, so typing can
+	 * carry on into the box that replaces it. */
+	struct dom_node *reflow_focus;
 	/** Hash table of imagemaps. */
 	struct imagemap **imagemaps;
 
