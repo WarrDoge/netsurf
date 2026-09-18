@@ -839,12 +839,67 @@ bool html_can_begin_conversion(html_content *htmlc)
 	return true;
 }
 
+/**
+ * Build the document's form list, with every action resolved against the
+ * base URL.
+ *
+ * Box construction attaches each control to the form that already names its
+ * element, so this has to run before a box tree is built, and again before
+ * any tree that replaces it.
+ */
+static nserror html_build_forms(html_content *htmlc)
+{
+	struct form *f;
+	nserror ns_error;
+
+	htmlc->forms = html_forms_get_forms(htmlc->encoding,
+			(dom_html_document *) htmlc->document);
+
+	for (f = htmlc->forms; f != NULL; f = f->prev) {
+		nsurl *action;
+
+		/* Make all actions absolute */
+		if (f->action == NULL || f->action[0] == '\0') {
+			/* HTML5 4.10.22.3 step 9 */
+			nsurl *doc_addr = content_get_url(&htmlc->base);
+			ns_error = nsurl_join(htmlc->base_url,
+					      nsurl_access(doc_addr),
+					      &action);
+		} else {
+			ns_error = nsurl_join(htmlc->base_url,
+					      f->action,
+					      &action);
+		}
+
+		if (ns_error != NSERROR_OK) {
+			return ns_error;
+		}
+
+		free(f->action);
+		f->action = strdup(nsurl_access(action));
+		nsurl_unref(action);
+		if (f->action == NULL) {
+			return NSERROR_NOMEM;
+		}
+
+		/* Ensure each form has a document encoding */
+		if (f->document_charset == NULL) {
+			f->document_charset = strdup(htmlc->encoding);
+			if (f->document_charset == NULL) {
+				return NSERROR_NOMEM;
+			}
+		}
+	}
+
+	return NSERROR_OK;
+}
+
+
 bool
 html_begin_conversion(html_content *htmlc)
 {
 	dom_node *html;
 	nserror ns_error;
-	struct form *f;
 	dom_exception exc; /* returned by libdom functions */
 	dom_string *node_name = NULL;
 	dom_hubbub_error error;
@@ -951,54 +1006,11 @@ html_begin_conversion(html_content *htmlc)
 	dom_string_unref(node_name);
 
 	/* Retrieve forms from parser */
-	htmlc->forms = html_forms_get_forms(htmlc->encoding,
-			(dom_html_document *) htmlc->document);
-	for (f = htmlc->forms; f != NULL; f = f->prev) {
-		nsurl *action;
-
-		/* Make all actions absolute */
-		if (f->action == NULL || f->action[0] == '\0') {
-			/* HTML5 4.10.22.3 step 9 */
-			nsurl *doc_addr = content_get_url(&htmlc->base);
-			ns_error = nsurl_join(htmlc->base_url,
-					      nsurl_access(doc_addr),
-					      &action);
-		} else {
-			ns_error = nsurl_join(htmlc->base_url,
-					      f->action,
-					      &action);
-		}
-
-		if (ns_error != NSERROR_OK) {
-			content_broadcast_error(&htmlc->base, ns_error, NULL);
-
-			dom_node_unref(html);
-			return false;
-		}
-
-		free(f->action);
-		f->action = strdup(nsurl_access(action));
-		nsurl_unref(action);
-		if (f->action == NULL) {
-			content_broadcast_error(&htmlc->base,
-						NSERROR_NOMEM,
-						NULL);
-
-			dom_node_unref(html);
-			return false;
-		}
-
-		/* Ensure each form has a document encoding */
-		if (f->document_charset == NULL) {
-			f->document_charset = strdup(htmlc->encoding);
-			if (f->document_charset == NULL) {
-				content_broadcast_error(&htmlc->base,
-							NSERROR_NOMEM,
-							NULL);
-				dom_node_unref(html);
-				return false;
-			}
-		}
+	ns_error = html_build_forms(htmlc);
+	if (ns_error != NSERROR_OK) {
+		content_broadcast_error(&htmlc->base, ns_error, NULL);
+		dom_node_unref(html);
+		return false;
 	}
 
 	dom_node_unref(html);
@@ -1715,6 +1727,16 @@ static void html_rebuild_box_tree(void *pw)
 
 	html_detach_box_tree(htmlc);
 	nscss_invalidate_node_data(html);
+
+	/* box construction only attaches a control to a form that is already
+	 * in the list, so the list has to be rebuilt first
+	 */
+	if (html_build_forms(htmlc) != NSERROR_OK) {
+		NSLOG(netsurf, WARNING, "form rebuild failed");
+		html_restore_detached_box_tree(htmlc);
+		dom_node_unref(html);
+		return;
+	}
 
 	error = dom_to_box(html, htmlc, html_rebuild_box_tree_done,
 			&htmlc->box_conversion_context);
