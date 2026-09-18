@@ -396,11 +396,18 @@ def run_test_step_action_click(ctx, step):
     print(get_indent(ctx) + "Action: " + step["action"])
     assert_browser(ctx)
     win = ctx['windows'][step['window']]
+    button = step.get('button', 'left').upper()
+    kind = step.get('kind', 'single').upper()
+
+    if 'target' not in step.keys():
+        # Nothing on the page to aim at, such as a checkbox, is clicked
+        # by coordinate instead.
+        win.click(int(step['x']), int(step['y']), button, kind)
+        return
+
     targets = step['target']
     if type(targets) == dict:
         targets = [targets]
-    button = step.get('button', 'left').upper()
-    kind = step.get('kind', 'single').upper()
     all_text_list = []
     bitmaps = []
     for plot in win.redraw():
@@ -584,6 +591,17 @@ def run_test_step_action_wait_log(ctx, step):
     win.wait_for_log(source=source, foldable=foldable, level=level, substr=substr)
 
 
+def run_test_step_action_key(ctx, step):
+    print(get_indent(ctx) + "Action: " + step["action"])
+    assert_browser(ctx)
+    win = ctx['windows'][step['window']]
+    if 'text' in step.keys():
+        for char in step['text']:
+            win.key(ord(char))
+    else:
+        win.key(int(step['code']))
+
+
 def run_test_step_action_js_exec(ctx, step):
     print(get_indent(ctx) + "Action: " + step["action"])
     assert_browser(ctx)
@@ -635,6 +653,7 @@ STEP_HANDLERS = {
     "remove-auth":   run_test_step_action_remove_auth,
     "clear-log":     run_test_step_action_clear_log,
     "wait-log":      run_test_step_action_wait_log,
+    "key":           run_test_step_action_key,
     "js-exec":       run_test_step_action_js_exec,
     "page-info-state":
                      run_test_step_action_page_info_state,

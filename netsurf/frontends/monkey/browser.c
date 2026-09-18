@@ -30,6 +30,7 @@
 #include "netsurf/mouse.h"
 #include "netsurf/window.h"
 #include "netsurf/browser_window.h"
+#include "netsurf/keypress.h"
 #include "netsurf/plotters.h"
 
 #include "monkey/output.h"
@@ -695,7 +696,40 @@ monkey_window_handle_click(int argc, char **argv)
 			moutf(MOUT_ERROR, "WINDOW KIND BAD");
 			return;
 		}
+		/* A real frontend reports the press and then the click,
+		 * and parts of the core only act on the press: a caret
+		 * is placed there, not on the click.
+		 */
+		browser_window_mouse_click(gw->bw,
+					   (mouse & ~BROWSER_MOUSE_CLICK_1 &
+					    ~BROWSER_MOUSE_CLICK_2) |
+					   ((mouse & BROWSER_MOUSE_CLICK_1) ?
+					    BROWSER_MOUSE_PRESS_1 :
+					    BROWSER_MOUSE_PRESS_2),
+					   x, y);
 		browser_window_mouse_click(gw->bw, mouse, x, y);
+	}
+}
+
+static void
+monkey_window_handle_key(int argc, char **argv)
+{
+	/* `WINDOW KEY WIN` _%id%_ `CODE` _%num%_ */
+	/*  0      1   2    3       4      5      */
+	struct gui_window *gw;
+
+	if (argc != 6) {
+		moutf(MOUT_ERROR, "WINDOW KEY ARGS BAD\n");
+		return;
+	}
+
+	gw = monkey_find_window_by_num(atoi(argv[3]));
+
+	if (gw == NULL) {
+		moutf(MOUT_ERROR, "WINDOW NUM BAD");
+	} else {
+		browser_window_key_press(gw->bw,
+					 (uint32_t)strtoul(argv[5], NULL, 0));
 	}
 }
 
@@ -721,6 +755,8 @@ monkey_window_handle_command(int argc, char **argv)
 		monkey_window_handle_exec(argc, argv);
 	} else if (strcmp(argv[1], "CLICK") == 0) {
 		monkey_window_handle_click(argc, argv);
+	} else if (strcmp(argv[1], "KEY") == 0) {
+		monkey_window_handle_key(argc, argv);
 	} else {
 		moutf(MOUT_ERROR, "WINDOW COMMAND UNKNOWN %s\n", argv[1]);
 	}
