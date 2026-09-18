@@ -120,8 +120,13 @@ NSOPTION_BOOL(background_images, true)
 /** Whether to animate images */
 NSOPTION_BOOL(animate_images, true)
 
-/** Whether to execute javascript */
-NSOPTION_BOOL(enable_javascript, false)
+/** Whether to execute javascript.
+ *
+ * On by default now that a DOM change rebuilds the box tree; before that,
+ * running script made pages worse rather than better, because the mutations
+ * it made were never laid out.
+ */
+NSOPTION_BOOL(enable_javascript, true)
 
 /** Whether to allow Author level CSS. */
 NSOPTION_BOOL(author_level_css, true)
