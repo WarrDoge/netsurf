@@ -209,6 +209,17 @@ typedef struct html_content {
 	union html_selection_owner selection_owner;
 
 	/** Current input focus target type */
+	/** node the pointer was last over, held for the mouseout that
+	 * pairs with the mouseover already fired at it
+	 */
+	struct dom_node *mouse_over;
+
+	/** element the focus is on, held for the blur that pairs with the
+	 * focus already fired at it.  A reflow replaces the box the focus
+	 * sits in, so the box is no record of it.
+	 */
+	struct dom_node *focus_node;
+
 	html_focus_type focus_type;
 	/** Current input focus target */
 	union html_focus_owner focus_owner;

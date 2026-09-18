@@ -1248,6 +1248,16 @@ static void html_destroy(struct content *c)
 
 	selection_destroy(html->sel);
 
+	if (html->mouse_over != NULL) {
+		dom_node_unref(html->mouse_over);
+		html->mouse_over = NULL;
+	}
+
+	if (html->focus_node != NULL) {
+		dom_node_unref(html->focus_node);
+		html->focus_node = NULL;
+	}
+
 	/* a rebuild caught in flight still owns the outgoing tree */
 	if (html->reflow_old.active) {
 		struct content_html_object *live_list = html->object_list;
