@@ -33,7 +33,6 @@
 #include "image/ico.h"
 #include "image/jpeg.h"
 #include "image/jpegxl.h"
-#include "image/nssprite.h"
 #include "image/png.h"
 #include "image/rsvg.h"
 #include "image/svg.h"
@@ -81,12 +80,6 @@ nserror image_init(void)
 
 #ifdef WITH_PNG
 	error = nspng_init();
-	if (error != NSERROR_OK)
-		return error;
-#endif
-
-#ifdef WITH_NSSPRITE
-	error = nssprite_init();
 	if (error != NSERROR_OK)
 		return error;
 #endif

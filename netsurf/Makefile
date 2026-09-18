@@ -6,9 +6,7 @@
 #
 # Trivially, invoke as:
 #   make
-# to build native, or:
-#   make TARGET=riscos
-# to cross-build for RO.
+# to build the framebuffer frontend.
 #
 # Look at Makefile.config for configuration options.
 #
@@ -155,7 +153,6 @@ LDFLAGS += -lz
 # We only need to define the ones where the feature name doesn't exactly
 # match the WITH_FEATURE flag
 NETSURF_FEATURE_NSSVG_CFLAGS := -DWITH_NS_SVG
-NETSURF_FEATURE_ROSPRITE_CFLAGS := -DWITH_NSSPRITE
 
 # libcurl and openssl ordering matters as if libcurl requires ssl it
 #  needs to come first in link order to ensure its symbols can be
@@ -177,7 +174,6 @@ $(eval $(call pkg_config_find_and_add_enabled,PNG,libpng,PNG))
 $(eval $(call pkg_config_find_and_add_enabled,BMP,libnsbmp,BMP))
 $(eval $(call pkg_config_find_and_add_enabled,GIF,libnsgif,GIF))
 $(eval $(call pkg_config_find_and_add_enabled,NSSVG,libsvgtiny,SVG))
-$(eval $(call pkg_config_find_and_add_enabled,ROSPRITE,librosprite,Sprite))
 $(eval $(call pkg_config_find_and_add_enabled,NSPSL,libnspsl,PSL))
 $(eval $(call pkg_config_find_and_add_enabled,NSLOG,libnslog,LOG))
 
@@ -330,35 +326,13 @@ IFLAGS = $(addprefix -I,$(INCLUDE_DIRS))
 
 $(EXETARGET): $(OBJECTS) $(RESOURCES) $(MESSAGES) tools/linktrace-to-depfile.pl
 	$(VQ)echo "    LINK: $(EXETARGET)"
-ifneq ($(TARGET),riscos)
 	$(Q)$(CC) -o $(EXETARGET) $(OBJECTS) $(LDFLAGS) > $(DEPROOT)/link-raw.d
-else
-	@# RISC OS targets are a bit special: we need to convert ELF -> AIF
-  ifeq ($(SUBTARGET),-aof)
-	$(Q)$(CC) -o $(EXETARGET) $(OBJECTS) $(LDFLAGS) > $(DEPROOT)/link-raw.d
-  else
-	$(Q)$(CXX) -o $(EXETARGET:,ff8=,e1f) $(OBJECTS) $(LDFLAGS) > $(DEPROOT)/link-raw.d
-	$(Q)$(ELF2AIF) $(EXETARGET:,ff8=,e1f) $(EXETARGET)
-	$(Q)$(RM) $(EXETARGET:,ff8=,e1f)
-  endif
-endif
 	$(VQ)echo "LINKDEPS: $(EXETARGET)"
 	$(Q)echo -n "$(EXETARGET) $(DEPROOT)/link.d: " > $(DEPROOT)/link.d
 	$(Q)$(PERL) tools/linktrace-to-depfile.pl < $(DEPROOT)/link-raw.d >> $(DEPROOT)/link.d
 ifeq ($(NETSURF_STRIP_BINARY),YES)
 	$(VQ)echo "   STRIP: $(EXETARGET)"
 	$(Q)$(STRIP) $(EXETARGET)
-endif
-ifeq ($(TARGET),beos)
-	$(VQ)echo "    XRES: $(EXETARGET)"
-	$(Q)$(BEOS_XRES) -o $(EXETARGET) $(RSRC_BEOS)
-	$(VQ)echo "  SETVER: $(EXETARGET)"
-	$(Q)$(BEOS_SETVER) $(EXETARGET) \
-                -app $(VERSION_MAJ) $(VERSION_MIN) 0 d 0 \
-                -short "NetSurf $(VERSION_FULL)" \
-                -long "NetSurf $(VERSION_FULL) © 2003 - 2021 The NetSurf Developers"
-	$(VQ)echo " MIMESET: $(EXETARGET)"
-	$(Q)$(BEOS_MIMESET) $(EXETARGET)
 endif
 
 clean-target:
