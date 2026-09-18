@@ -1,0 +1,15 @@
+<html>
+  <head>
+    <title>innerHTML getter test</title>
+  </head>
+  <body>
+    <div id="src"><p class="a">one &amp; two</p><br><!--note--></div>
+    <div id="out">unset</div>
+    <script>
+      var got = document.getElementById("src").innerHTML;
+      var out = document.getElementById("out");
+      out.removeChild(out.firstChild);
+      out.appendChild(document.createTextNode("GOT[" + got + "]"));
+    </script>
+  </body>
+</html>

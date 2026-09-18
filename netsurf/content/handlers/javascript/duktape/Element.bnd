@@ -10,10 +10,311 @@
 
 class Element {
 	prologue %{
+#include <utils/ascii.h>
 #include <utils/corestrings.h>
 #include <dom/bindings/hubbub/parser.h>
 %};
 };
+
+prologue Element()
+%{
+
+/**
+ * HTML serialisation, as innerHTML and outerHTML return it.
+ *
+ * The pieces are pushed onto the duktape value stack and folded together
+ * once they pile up, so the growing string needs no buffer of its own.
+ */
+
+#define SERIALISE_FOLD 32
+
+typedef struct {
+	duk_context *ctx;
+	duk_idx_t nparts;
+} serialise_ctx;
+
+static void serialise_push(serialise_ctx *s, const char *data, size_t len)
+{
+	if (s->nparts >= SERIALISE_FOLD) {
+		duk_concat(s->ctx, s->nparts);
+		s->nparts = 1;
+	}
+	duk_push_lstring(s->ctx, data, len);
+	s->nparts++;
+}
+
+static void serialise_push_str(serialise_ctx *s, const char *str)
+{
+	serialise_push(s, str, strlen(str));
+}
+
+/**
+ * Push a lower-cased tag name.  libdom reports HTML tag names in upper case;
+ * every browser serialises them lower.
+ */
+static void serialise_push_tag_name(serialise_ctx *s, dom_string *name)
+{
+	const char *data = dom_string_data(name);
+	size_t len = dom_string_byte_length(name);
+	char buf[64];
+	size_t i;
+
+	if (len > sizeof(buf)) {
+		serialise_push(s, data, len);
+		return;
+	}
+
+	for (i = 0; i < len; i++) {
+		buf[i] = ascii_to_lower(data[i]);
+	}
+	serialise_push(s, buf, len);
+}
+
+/**
+ * Push text with the markup characters escaped.  Attribute values are quoted
+ * with '"', so they escape that instead of the tag delimiters.
+ */
+static void serialise_push_escaped(serialise_ctx *s, dom_string *str, bool attr)
+{
+	const char *data = dom_string_data(str);
+	size_t len = dom_string_byte_length(str);
+	size_t i, start = 0;
+
+	for (i = 0; i < len; i++) {
+		const char *rep = NULL;
+
+		switch (data[i]) {
+		case '&':
+			rep = "&amp;";
+			break;
+		case '<':
+			rep = attr ? NULL : "&lt;";
+			break;
+		case '>':
+			rep = attr ? NULL : "&gt;";
+			break;
+		case '"':
+			rep = attr ? "&quot;" : NULL;
+			break;
+		default:
+			break;
+		}
+
+		if (rep == NULL) {
+			continue;
+		}
+
+		if (i > start) {
+			serialise_push(s, data + start, i - start);
+		}
+		serialise_push_str(s, rep);
+		start = i + 1;
+	}
+
+	if (len > start) {
+		serialise_push(s, data + start, len - start);
+	}
+}
+
+static bool serialise_name_in(dom_string *name, const char * const *set)
+{
+	const char *data = dom_string_data(name);
+	size_t len = dom_string_byte_length(name);
+	size_t i;
+
+	for (i = 0; set[i] != NULL; i++) {
+		if (strlen(set[i]) == len &&
+		    strncasecmp(set[i], data, len) == 0) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/** Elements that are written without a closing tag and have no children. */
+static bool serialise_is_void(dom_string *name)
+{
+	static const char * const voids[] = {
+		"area", "base", "basefont", "bgsound", "br", "col", "embed",
+		"frame", "hr", "img", "input", "keygen", "link", "meta",
+		"param", "source", "track", "wbr", NULL
+	};
+
+	return serialise_name_in(name, voids);
+}
+
+/** Elements whose text content is markup-free and must not be escaped. */
+static bool serialise_is_raw_text(dom_string *name)
+{
+	static const char * const raw[] = {
+		"script", "style", "xmp", "iframe", "noembed", "noframes",
+		"plaintext", NULL
+	};
+
+	return serialise_name_in(name, raw);
+}
+
+static void serialise_node(serialise_ctx *s, dom_node *node, bool raw);
+
+static void serialise_children(serialise_ctx *s, dom_node *node, bool raw)
+{
+	dom_node *child;
+	dom_exception exc;
+
+	exc = dom_node_get_first_child(node, &child);
+	if (exc != DOM_NO_ERR) {
+		return;
+	}
+
+	while (child != NULL) {
+		dom_node *next;
+
+		serialise_node(s, child, raw);
+
+		exc = dom_node_get_next_sibling(child, &next);
+		dom_node_unref(child);
+		if (exc != DOM_NO_ERR) {
+			return;
+		}
+		child = next;
+	}
+}
+
+static void serialise_attributes(serialise_ctx *s, dom_node *node)
+{
+	dom_namednodemap *map;
+	dom_exception exc;
+	uint32_t count, i;
+
+	exc = dom_node_get_attributes(node, &map);
+	if ((exc != DOM_NO_ERR) || (map == NULL)) {
+		return;
+	}
+
+	exc = dom_namednodemap_get_length(map, &count);
+	if (exc != DOM_NO_ERR) {
+		dom_namednodemap_unref(map);
+		return;
+	}
+
+	for (i = 0; i < count; i++) {
+		dom_node *attr;
+		dom_string *name = NULL;
+		dom_string *value = NULL;
+
+		exc = dom_namednodemap_item(map, i, &attr);
+		if ((exc != DOM_NO_ERR) || (attr == NULL)) {
+			continue;
+		}
+
+		exc = dom_node_get_node_name(attr, &name);
+		if ((exc == DOM_NO_ERR) && (name != NULL)) {
+			serialise_push_str(s, " ");
+			serialise_push(s, dom_string_data(name),
+				       dom_string_byte_length(name));
+			serialise_push_str(s, "=\"");
+
+			exc = dom_node_get_node_value(attr, &value);
+			if ((exc == DOM_NO_ERR) && (value != NULL)) {
+				serialise_push_escaped(s, value, true);
+				dom_string_unref(value);
+			}
+
+			serialise_push_str(s, "\"");
+			dom_string_unref(name);
+		}
+
+		dom_node_unref(attr);
+	}
+
+	dom_namednodemap_unref(map);
+}
+
+static void serialise_node(serialise_ctx *s, dom_node *node, bool raw)
+{
+	dom_node_type type;
+	dom_exception exc;
+	dom_string *str = NULL;
+
+	exc = dom_node_get_node_type(node, &type);
+	if (exc != DOM_NO_ERR) {
+		return;
+	}
+
+	switch (type) {
+	case DOM_ELEMENT_NODE:
+		exc = dom_node_get_node_name(node, &str);
+		if ((exc != DOM_NO_ERR) || (str == NULL)) {
+			return;
+		}
+
+		serialise_push_str(s, "<");
+		serialise_push_tag_name(s, str);
+		serialise_attributes(s, node);
+		serialise_push_str(s, ">");
+
+		if (serialise_is_void(str) == false) {
+			serialise_children(s, node,
+					   serialise_is_raw_text(str));
+			serialise_push_str(s, "</");
+			serialise_push_tag_name(s, str);
+			serialise_push_str(s, ">");
+		}
+
+		dom_string_unref(str);
+		break;
+
+	case DOM_TEXT_NODE:
+		exc = dom_characterdata_get_data(node, &str);
+		if ((exc != DOM_NO_ERR) || (str == NULL)) {
+			return;
+		}
+		if (raw) {
+			serialise_push(s, dom_string_data(str),
+				       dom_string_byte_length(str));
+		} else {
+			serialise_push_escaped(s, str, false);
+		}
+		dom_string_unref(str);
+		break;
+
+	case DOM_COMMENT_NODE:
+		exc = dom_characterdata_get_data(node, &str);
+		if ((exc != DOM_NO_ERR) || (str == NULL)) {
+			return;
+		}
+		serialise_push_str(s, "<!--");
+		serialise_push(s, dom_string_data(str),
+			       dom_string_byte_length(str));
+		serialise_push_str(s, "-->");
+		dom_string_unref(str);
+		break;
+
+	default:
+		break;
+	}
+}
+
+/**
+ * Serialise a node's children and leave the result on the duktape stack.
+ */
+static void serialise_contents(duk_context *ctx, dom_node *node)
+{
+	serialise_ctx s = { ctx, 0 };
+
+	duk_require_stack(ctx, SERIALISE_FOLD + 8);
+
+	serialise_children(&s, node, false);
+
+	if (s.nparts == 0) {
+		duk_push_lstring(ctx, "", 0);
+	} else {
+		duk_concat(ctx, s.nparts);
+	}
+}
+
+%}
 
 init Element(struct dom_element *element::node);
 
@@ -425,7 +726,7 @@ getter Element::classList ()
 
 getter Element::innerHTML()
 %{
-	duk_push_lstring(ctx, "", 0);
+	serialise_contents(ctx, ((node_private_t *)priv)->node);
 	return 1;
 %}
 
