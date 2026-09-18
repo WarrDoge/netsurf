@@ -514,6 +514,8 @@ static void linux_vt_release(struct lnx_priv *lstate)
  * the way back the console we left behind has scribbled over video memory,
  * so the whole back buffer has to be pushed out again.
  */
+static void linux_input_set_grab(struct lnx_priv *lstate, bool grab);
+
 static void linux_vt_poll(nsfb_t *nsfb)
 {
 	struct lnx_priv *lstate = nsfb->surface_priv;
@@ -524,6 +526,7 @@ static void linux_vt_poll(nsfb_t *nsfb)
 
 	if (vt_release_requested) {
 		vt_release_requested = 0;
+		linux_input_set_grab(lstate, false);
 		ioctl(lstate->tty_fd, KDSETMODE, KD_TEXT);
 		ioctl(lstate->tty_fd, VT_RELDISP, 1);
 	}
@@ -532,6 +535,7 @@ static void linux_vt_poll(nsfb_t *nsfb)
 		vt_acquire_requested = 0;
 		ioctl(lstate->tty_fd, VT_RELDISP, VT_ACKACQ);
 		ioctl(lstate->tty_fd, KDSETMODE, KD_GRAPHICS);
+		linux_input_set_grab(lstate, true);
 		linux_blit_all(nsfb);
 	}
 }
@@ -631,6 +635,28 @@ static void linux_input_open(struct lnx_priv *lstate)
 	globfree(&gl);
 
 	free(spec);
+}
+
+
+/**
+ * Take or drop the exclusive claim on the input devices.
+ *
+ * The claim is what stops keystrokes reaching the shell behind the browser,
+ * and it also bypasses the kernel's own VT keyboard handling, so it has to
+ * follow console ownership rather than outlive it.
+ */
+static void linux_input_set_grab(struct lnx_priv *lstate, bool grab)
+{
+	int i;
+
+	for (i = 0; i < lstate->input_count; i++) {
+		if (lstate->input[i].grabbed == grab) {
+			continue;
+		}
+		if (ioctl(lstate->input[i].fd, EVIOCGRAB, grab ? 1 : 0) >= 0) {
+			lstate->input[i].grabbed = grab;
+		}
+	}
 }
 
 
