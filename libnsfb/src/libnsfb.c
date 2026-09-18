@@ -64,6 +64,7 @@ nsfb_free(nsfb_t *nsfb)
 
     ret = nsfb->surface_rtns->finalise(nsfb);
 
+    free(nsfb->parameters);
     free(nsfb->surface_rtns);
     free(nsfb);
 
