@@ -79,8 +79,11 @@ interface ParentNode {
 
   [Unscopeable] Element? query(DOMString relativeSelectors);
   [NewObject, Unscopeable] Elements queryAll(DOMString relativeSelectors);
-  Element? querySelector(DOMString selectors);
-  [NewObject] NodeList querySelectorAll(DOMString selectors);
+  /* querySelector and querySelectorAll are provided by polyfill.js, which
+   * cannot define them here: nsgenbind emits an unimplemented method for
+   * every declaration, and those are neither writable nor configurable, so
+   * a script side definition would be refused.
+   */
 };
 Document implements ParentNode;
 DocumentFragment implements ParentNode;
@@ -305,8 +308,7 @@ interface Element : Node {
   Attr? setAttributeNodeNS(Attr attr);
   Attr removeAttributeNode(Attr attr);
 
-  Element? closest(DOMString selectors);
-  boolean matches(DOMString selectors);
+  /* closest and matches likewise come from polyfill.js */
 
   HTMLCollection getElementsByTagName(DOMString localName);
   HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);

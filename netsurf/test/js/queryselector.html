@@ -1,0 +1,70 @@
+<!DOCTYPE html><html><head><title>querySelector</title><style>
+body{font-family:sans-serif;margin:8px;font-size:13px}
+#out{padding:6px;background:#eee;white-space:pre}
+.ok{background:#227722;color:#fff} .bad{background:#cc2222;color:#fff}
+</style></head><body>
+<div id="tree">
+  <ul class="list" data-kind="main">
+    <li id="a" class="item first">alpha</li>
+    <li class="item" lang="en-GB">beta</li>
+    <li class="item special" title="x y z">gamma</li>
+    <li class="other">delta</li>
+  </ul>
+  <p class="item">para</p>
+  <input type="checkbox" checked disabled id="cb">
+</div>
+<div id="out">running</div>
+<script>
+var results = [];
+function check(name, got, want) {
+  results.push((got === want ? 'ok' : 'FAIL') + ' ' + name + ' = ' + got +
+               (got === want ? '' : ' (want ' + want + ')'));
+}
+function n(sel, root) { return (root || document).querySelectorAll(sel).length; }
+function txt(sel) { var e = document.querySelector(sel); return e ? e.firstChild.nodeValue : 'null'; }
+try {
+check('tag li', n('li'), 4);
+check('class', n('.item'), 4);
+check('id', n('#a'), 1);
+check('compound', n('li.item'), 3);
+check('descendant', n('ul li'), 4);
+check('child', n('ul > li'), 4);
+check('child none', n('div > li'), 0);
+check('adjacent', n('li + li'), 3);
+check('sibling', n('#a ~ li'), 3);
+check('group', n('li, p'), 5);
+check('attr exists', n('[title]'), 1);
+check('attr equals', n('[data-kind=main]'), 1);
+check('attr includes', n('[title~=y]'), 1);
+check('attr dashmatch', n('[lang|=en]'), 1);
+check('attr prefix', n('[class^=item]'), 4);
+check('attr suffix', n('[class$=special]'), 1);
+check('attr substring', n('[class*=pecia]'), 1);
+check('first-child', txt('li:first-child'), 'alpha');
+check('last-child', txt('.list li:last-child'), 'delta');
+check('nth-child(2)', txt('li:nth-child(2)'), 'beta');
+check('nth-child(odd)', n('li:nth-child(odd)'), 2);
+check('nth-child(2n)', n('li:nth-child(2n)'), 2);
+check('nth-last-child', txt('li:nth-last-child(1)'), 'delta');
+check('not', n('li:not(.item)'), 1);
+check('checked', n(':checked'), 1);
+check('disabled', n(':disabled'), 1);
+check('scoped *', n('*', document.getElementById('tree')), 7);
+check('scoped class', n('.item', document.querySelector('.list')), 3);
+check('matches', document.getElementById('a').matches('li.item.first'), true);
+check('closest', document.getElementById('a').closest('.list').className, 'list');
+check('no match', document.querySelector('blockquote'), null);
+try { document.querySelectorAll('li:nonsense'); check('bad selector throws', false, true); }
+catch (e) { check('bad selector throws', true, true); }
+} catch (err) { results.push('THREW ' + err); }
+var bad = [];
+for (var i = 0; i < results.length; i++) {
+  if (results[i].indexOf('ok ') !== 0) { bad.push(results[i]); }
+}
+var d = document.getElementById('out');
+while (d.firstChild) { d.removeChild(d.firstChild); }
+d.className = bad.length === 0 ? 'ok' : 'bad';
+d.appendChild(document.createTextNode(bad.length === 0 ?
+  ('all ' + results.length + ' selector checks passed') : bad.join('\n')));
+</script>
+</body></html>
