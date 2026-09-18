@@ -609,6 +609,7 @@ struct mouse_action_state {
 		int box_x;
 		int box_y;
 		const char *target;
+		bool changed; /**< the click altered the control's value */
 	} gadget;
 
 	/** title */
@@ -868,12 +869,18 @@ gadget_mouse_action(html_content *html,
 				(dom_html_input_element *)(mas->gadget.control->node),
 				mas->gadget.control->selected);
 			html__redraw_a_box(html, mas->gadget.box);
+			mas->gadget.changed = true;
 		}
 		break;
 
 	case GADGET_RADIO:
 		mas->result.status = messages_get("FormRadio");
 		if (mouse & BROWSER_MOUSE_CLICK_1) {
+			/* a radio already selected is left alone, and so
+			 * reports no change
+			 */
+			mas->gadget.changed =
+				(mas->gadget.control->selected == false);
 			form_radio_set(mas->gadget.control);
 		}
 		break;
@@ -1401,11 +1408,28 @@ mouse_action_drag_none(html_content *html,
 		fire_generic_dom_event(corestring_dom_click, mas.node, true, true);
 	}
 
+	/* fire dom change event for a control the click has just altered.
+	 * The gadget switch above is too early to run script from: it is
+	 * still walking its own state.
+	 */
+	if (mas.gadget.changed) {
+		fire_generic_dom_event(corestring_dom_change,
+				       (dom_node *)mas.gadget.control->node,
+				       true, false);
+	}
+
 	/* deferred actions that can cause this browser_window to be destroyed
 	 * and must therefore be done after set_status/pointer
 	 */
 	switch (mas.result.action) {
 	case ACTION_SUBMIT:
+		if (fire_generic_dom_event(
+			    corestring_dom_submit,
+			    (dom_node *)mas.gadget.control->form->node,
+			    true, true) == false) {
+			/* a listener called preventDefault() */
+			break;
+		}
 		res = form_submit(content_get_url(c),
 				  browser_window_find_target(bw,
 							     mas.gadget.target,

@@ -1,0 +1,16 @@
+<html>
+  <head>
+    <title>checkbox change event test</title>
+  </head>
+  <body>
+    <input type="checkbox" id="c">
+    <div id="log">no change yet</div>
+    <script>
+      document.getElementById("c").addEventListener("change", function () {
+        var log = document.getElementById("log");
+        log.removeChild(log.firstChild);
+        log.appendChild(document.createTextNode("change fired"));
+      });
+    </script>
+  </body>
+</html>

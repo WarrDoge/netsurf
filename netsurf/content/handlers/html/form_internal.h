@@ -62,6 +62,7 @@ typedef enum {
 /** Data for textarea */
 struct form_textarea_data {
 	struct form_control *gadget;
+	bool setting_text; /**< the value is being pushed in, not typed */
 };
 
 struct image_input_coords {

@@ -1386,6 +1386,9 @@ form__select_process_selection(html_content *html,
 
 	html__redraw_a_box(html, control->box);
 
+	fire_generic_dom_event(corestring_dom_change,
+			       (dom_node *)control->node, true, false);
+
 	return ret;
 }
 
@@ -2238,8 +2241,10 @@ form_gadget_sync_with_dom(struct form_control *control)
 			control->last_synced_value = dup;
 			if (control->type != GADGET_HIDDEN &&
 			    control->data.text.ta != NULL) {
+				control->data.text.data.setting_text = true;
 				textarea_set_text(control->data.text.ta,
 						  value_s);
+				control->data.text.data.setting_text = false;
 			}
 		}
 		control->node_value = value;

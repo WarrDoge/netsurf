@@ -1,0 +1,19 @@
+<html>
+  <head>
+    <title>submit event test</title>
+  </head>
+  <body>
+    <form id="f" action="nowhere.html" method="get">
+      <input type="submit" value="send it">
+    </form>
+    <div id="log">no submit yet</div>
+    <script>
+      document.getElementById("f").addEventListener("submit", function (e) {
+        e.preventDefault();
+        var log = document.getElementById("log");
+        log.removeChild(log.firstChild);
+        log.appendChild(document.createTextNode("submit was blocked"));
+      });
+    </script>
+  </body>
+</html>
