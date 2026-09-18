@@ -112,6 +112,7 @@ window_schedule_callback(void *p)
 	window_call_callback(priv->ctx,
 			     priv->handle,
 			     priv->repeat_timeout == 0);
+	dukky_run_microtasks(priv->ctx);
 	priv->running = false;
 
 	if (priv->repeat_timeout > 0) {

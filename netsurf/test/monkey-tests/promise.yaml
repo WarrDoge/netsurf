@@ -1,0 +1,24 @@
+title: Promise resolves on the microtask queue
+group: basic
+steps:
+- action: launch
+  launch-options:
+  - enable_javascript=1
+- action: window-new
+  tag: win1
+- action: navigate
+  window: win1
+  url: file://${CWD}/test/js/promise.html
+- action: block
+  conditions:
+  - window: win1
+    status: complete
+- action: sleep-ms
+  time: 1000
+- action: plot-check
+  window: win1
+  checks:
+  # synchronous code must finish before any reaction runs
+  # the two-tick then chain settles after the one-tick catch
+  - text-contains: sync caught-boom chain42 all123 after-timer
+- action: quit

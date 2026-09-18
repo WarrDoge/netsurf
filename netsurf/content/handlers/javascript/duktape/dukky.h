@@ -51,6 +51,17 @@ void dukky_shuffle_array(duk_context *ctx, duk_uarridx_t idx);
 /* pcall something, and if it errored, also dump the error to the log */
 duk_int_t dukky_pcall(duk_context *ctx, duk_size_t argc, bool reset_timeout);
 
+/**
+ * Run every queued microtask.
+ *
+ * Promise reactions are queued rather than run inline, so this has to be
+ * called at the end of each turn: after a script, after an event, and after
+ * a timer callback.
+ *
+ * \param ctx The duktape context to drain.
+ */
+void dukky_run_microtasks(duk_context *ctx);
+
 /* Push a generics function onto the stack */
 void dukky_push_generics(duk_context *ctx, const char *generic);
 

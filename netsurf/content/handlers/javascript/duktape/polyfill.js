@@ -101,3 +101,223 @@ DOMTokenList.prototype.toString = function () {
 
 // Inherit the same toString for settable lists
 DOMSettableTokenList.prototype.toString = DOMTokenList.prototype.toString;
+
+/* Promise, and the microtask queue it runs on.
+ *
+ * Duktape 2.7 is ES5.1 with pieces of ES2015 and has no Promise. Nothing
+ * needs promises to be fast, but a great deal of modern code needs them to
+ * exist, so a polyfill is the right trade here.
+ *
+ * Reactions are queued rather than run inline, as the specification
+ * requires. The host drains the queue after each script and each event
+ * through NetSurfDrainMicrotasks, which dukky moves off the global object
+ * once this file has run.
+ */
+var NetSurfPromiseSupport = (function () {
+  var queue = [];
+  var draining = false;
+
+  function enqueue(job) {
+    queue.push(job);
+  }
+
+  function drain() {
+    if (draining) {
+      return;
+    }
+    draining = true;
+    try {
+      /* a job may queue further jobs, which must run in the same drain */
+      while (queue.length > 0) {
+        var job = queue.shift();
+        job();
+      }
+    } finally {
+      draining = false;
+    }
+  }
+
+  var PENDING = 0, FULFILLED = 1, REJECTED = 2;
+
+  function isThenable(x) {
+    return x !== null &&
+        (typeof x === 'object' || typeof x === 'function') &&
+        typeof x.then === 'function';
+  }
+
+  function settle(promise, state, value) {
+    if (promise._state !== PENDING) {
+      return;
+    }
+
+    promise._state = state;
+    promise._value = value;
+
+    var reactions = promise._reactions;
+    promise._reactions = [];
+
+    for (var i = 0; i < reactions.length; i++) {
+      enqueue(reactions[i]);
+    }
+  }
+
+  function resolve(promise, value) {
+    if (promise._state !== PENDING) {
+      return;
+    }
+
+    if (value === promise) {
+      settle(promise, REJECTED,
+             new TypeError('Chaining cycle detected for promise'));
+      return;
+    }
+
+    if (isThenable(value)) {
+      var called = false;
+      try {
+        value.then(function (v) {
+          if (!called) { called = true; resolve(promise, v); }
+        }, function (e) {
+          if (!called) { called = true; settle(promise, REJECTED, e); }
+        });
+      } catch (e) {
+        if (!called) { called = true; settle(promise, REJECTED, e); }
+      }
+      return;
+    }
+
+    settle(promise, FULFILLED, value);
+  }
+
+  function react(promise, onFulfilled, onRejected, next) {
+    return function () {
+      var handler = promise._state === FULFILLED ? onFulfilled : onRejected;
+
+      if (typeof handler !== 'function') {
+        /* pass the settled value straight through the chain */
+        if (promise._state === FULFILLED) {
+          resolve(next, promise._value);
+        } else {
+          settle(next, REJECTED, promise._value);
+        }
+        return;
+      }
+
+      try {
+        resolve(next, handler(promise._value));
+      } catch (e) {
+        settle(next, REJECTED, e);
+      }
+    };
+  }
+
+  function Promise(executor) {
+    if (!(this instanceof Promise)) {
+      throw new TypeError("Constructor Promise requires 'new'");
+    }
+    if (typeof executor !== 'function') {
+      throw new TypeError('Promise resolver is not a function');
+    }
+
+    this._state = PENDING;
+    this._value = undefined;
+    this._reactions = [];
+
+    var self = this;
+    try {
+      executor(function (v) { resolve(self, v); },
+               function (e) { settle(self, REJECTED, e); });
+    } catch (e) {
+      settle(self, REJECTED, e);
+    }
+  }
+
+  Promise.prototype.then = function (onFulfilled, onRejected) {
+    var next = new Promise(function () {});
+    var job = react(this, onFulfilled, onRejected, next);
+
+    if (this._state === PENDING) {
+      this._reactions.push(job);
+    } else {
+      enqueue(job);
+    }
+
+    return next;
+  };
+
+  Promise.prototype['catch'] = function (onRejected) {
+    return this.then(undefined, onRejected);
+  };
+
+  Promise.prototype['finally'] = function (onFinally) {
+    return this.then(function (v) {
+      if (typeof onFinally === 'function') { onFinally(); }
+      return v;
+    }, function (e) {
+      if (typeof onFinally === 'function') { onFinally(); }
+      throw e;
+    });
+  };
+
+  Promise.resolve = function (value) {
+    if (value instanceof Promise) {
+      return value;
+    }
+    return new Promise(function (res) { res(value); });
+  };
+
+  Promise.reject = function (reason) {
+    return new Promise(function (res, rej) { rej(reason); });
+  };
+
+  Promise.all = function (items) {
+    return new Promise(function (res, rej) {
+      var values = [];
+      var remaining = 0;
+      var done = false;
+
+      function one(index, item) {
+        remaining++;
+        Promise.resolve(item).then(function (v) {
+          values[index] = v;
+          if (--remaining === 0 && done) { res(values); }
+        }, rej);
+      }
+
+      for (var i = 0; i < items.length; i++) {
+        one(i, items[i]);
+      }
+
+      done = true;
+      if (remaining === 0) { res(values); }
+    });
+  };
+
+  Promise.race = function (items) {
+    return new Promise(function (res, rej) {
+      for (var i = 0; i < items.length; i++) {
+        Promise.resolve(items[i]).then(res, rej);
+      }
+    });
+  };
+
+  Promise.allSettled = function (items) {
+    return Promise.all(Array.prototype.map.call(items, function (item) {
+      return Promise.resolve(item).then(function (value) {
+        return { status: 'fulfilled', value: value };
+      }, function (reason) {
+        return { status: 'rejected', reason: reason };
+      });
+    }));
+  };
+
+  return { promise: Promise, drain: drain };
+})();
+
+/* Hand the exports back as this program's completion value. Neither a var
+ * binding nor a bare assignment made here reaches the object that page
+ * scripts resolve names against, because the file is evaluated as an eval
+ * program against the global the Window replaced, so dukky installs them
+ * from C instead.
+ */
+NetSurfPromiseSupport;
