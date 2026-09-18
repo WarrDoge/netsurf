@@ -102,6 +102,310 @@ DOMTokenList.prototype.toString = function () {
 // Inherit the same toString for settable lists
 DOMSettableTokenList.prototype.toString = DOMTokenList.prototype.toString;
 
+
+/* The ES2015 library functions Duktape 2.7 does not carry.
+ *
+ * Syntax it lacks cannot be polyfilled, but these are ordinary functions,
+ * and modern code calls them without feature detecting first, so their
+ * absence is an immediate TypeError rather than a graceful degradation.
+ */
+(function () {
+  function def(obj, name, fn) {
+    if (obj[name] !== undefined) {
+      return;
+    }
+    try {
+      Object.defineProperty(obj, name, {
+        value: fn, writable: true, enumerable: false, configurable: true
+      });
+    } catch (e) {
+      obj[name] = fn;
+    }
+  }
+
+  def(Object, 'values', function (o) {
+    var out = [];
+    for (var k in Object(o)) {
+      if (Object.prototype.hasOwnProperty.call(o, k)) { out.push(o[k]); }
+    }
+    return out;
+  });
+
+  def(Object, 'entries', function (o) {
+    var out = [];
+    for (var k in Object(o)) {
+      if (Object.prototype.hasOwnProperty.call(o, k)) { out.push([k, o[k]]); }
+    }
+    return out;
+  });
+
+  def(Array, 'of', function () {
+    return Array.prototype.slice.call(arguments);
+  });
+
+  def(Array.prototype, 'includes', function (needle, from) {
+    var len = this.length >>> 0;
+    var i = from | 0;
+    if (i < 0) { i = Math.max(len + i, 0); }
+    for (; i < len; i++) {
+      /* unlike indexOf, this has to find NaN */
+      if (this[i] === needle || (needle !== needle && this[i] !== this[i])) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  def(Array.prototype, 'find', function (pred, thisArg) {
+    var len = this.length >>> 0;
+    for (var i = 0; i < len; i++) {
+      if (pred.call(thisArg, this[i], i, this)) { return this[i]; }
+    }
+    return undefined;
+  });
+
+  def(Array.prototype, 'findIndex', function (pred, thisArg) {
+    var len = this.length >>> 0;
+    for (var i = 0; i < len; i++) {
+      if (pred.call(thisArg, this[i], i, this)) { return i; }
+    }
+    return -1;
+  });
+
+  def(Array.prototype, 'fill', function (value, start, end) {
+    var len = this.length >>> 0;
+    var i = start === undefined ? 0 : (start | 0);
+    var last = end === undefined ? len : (end | 0);
+    if (i < 0) { i = Math.max(len + i, 0); }
+    if (last < 0) { last = Math.max(len + last, 0); }
+    for (; i < last && i < len; i++) { this[i] = value; }
+    return this;
+  });
+
+  function pad(text, length, filler, atStart) {
+    text = String(text);
+    length = length >> 0;
+    filler = filler === undefined ? ' ' : String(filler);
+
+    if (text.length >= length || filler === '') {
+      return text;
+    }
+
+    var made = '';
+    while (made.length < length - text.length) { made += filler; }
+    made = made.slice(0, length - text.length);
+
+    return atStart ? made + text : text + made;
+  }
+
+  def(String.prototype, 'padStart', function (length, filler) {
+    return pad(this, length, filler, true);
+  });
+
+  def(String.prototype, 'padEnd', function (length, filler) {
+    return pad(this, length, filler, false);
+  });
+
+  def(String.prototype, 'trimStart', function () {
+    return String(this).replace(/^[\s﻿\xA0]+/, '');
+  });
+
+  def(String.prototype, 'trimEnd', function () {
+    return String(this).replace(/[\s﻿\xA0]+$/, '');
+  });
+}());
+
+
+/* Map, Set and their weak counterparts.
+ *
+ * Keys are hashed rather than searched for, so lookup does not degrade with
+ * size: primitives by their value and type, objects by a non-enumerable tag
+ * written on first use. An object that refuses the tag, which a host object
+ * may, falls back to a linear scan.
+ *
+ * The weak forms hold their keys as strongly as the others do. Real
+ * weakness needs engine support, and the common use, hanging data off a
+ * node for as long as the page lives, does not notice.
+ */
+var NetSurfCollections = (function () {
+  var TAG = '__nsCollectionKey';
+  var counter = 0;
+
+  function tagOf(key) {
+    var type = typeof key;
+
+    if (key === null) { return 'null'; }
+    if (type === 'undefined') { return 'undef'; }
+    if (type === 'string') { return 's' + key; }
+    if (type === 'boolean') { return 'b' + key; }
+    if (type === 'number') {
+      /* NaN is its own key, and -0 and 0 are the same one */
+      return (key !== key) ? 'nan' : ('n' + (key === 0 ? 0 : key));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(key, TAG)) {
+      return key[TAG];
+    }
+
+    var tag = 'o' + (++counter);
+    try {
+      Object.defineProperty(key, TAG, {
+        value: tag, writable: false, enumerable: false, configurable: false
+      });
+    } catch (e) {
+      return null; /* not taggable; the caller scans instead */
+    }
+
+    return tag;
+  }
+
+  function Store() {
+    this.entries = [];   /* [key, value], in insertion order */
+    this.index = {};     /* tag -> position in entries */
+  }
+
+  Store.prototype.find = function (key) {
+    var tag = tagOf(key);
+
+    if (tag !== null) {
+      var at = this.index['@' + tag];
+      return at === undefined ? -1 : at;
+    }
+
+    for (var i = 0; i < this.entries.length; i++) {
+      if (this.entries[i][0] === key) { return i; }
+    }
+    return -1;
+  };
+
+  Store.prototype.set = function (key, value) {
+    var at = this.find(key);
+
+    if (at >= 0) {
+      this.entries[at][1] = value;
+      return;
+    }
+
+    var tag = tagOf(key);
+    this.entries.push([key, value]);
+    if (tag !== null) {
+      this.index['@' + tag] = this.entries.length - 1;
+    }
+  };
+
+  Store.prototype.remove = function (key) {
+    var at = this.find(key);
+
+    if (at < 0) { return false; }
+
+    this.entries.splice(at, 1);
+
+    /* positions after the hole all moved down */
+    this.index = {};
+    for (var i = 0; i < this.entries.length; i++) {
+      var tag = tagOf(this.entries[i][0]);
+      if (tag !== null) { this.index['@' + tag] = i; }
+    }
+
+    return true;
+  };
+
+  Store.prototype.clear = function () {
+    this.entries = [];
+    this.index = {};
+  };
+
+  function NSMap(init) {
+    if (!(this instanceof NSMap)) {
+      throw new TypeError("Constructor Map requires 'new'");
+    }
+    this._store = new Store();
+    if (init !== undefined && init !== null) {
+      for (var i = 0; i < init.length; i++) {
+        this.set(init[i][0], init[i][1]);
+      }
+    }
+  }
+
+  function sized(proto) {
+    try {
+      Object.defineProperty(proto, 'size', {
+        get: function () { return this._store.entries.length; },
+        enumerable: false,
+        configurable: true
+      });
+    } catch (e) {
+      /* leave size off rather than fail to load */
+    }
+  }
+
+  NSMap.prototype.get = function (key) {
+    var at = this._store.find(key);
+    return at < 0 ? undefined : this._store.entries[at][1];
+  };
+  NSMap.prototype.set = function (key, value) {
+    this._store.set(key, value);
+    return this;
+  };
+  NSMap.prototype.has = function (key) { return this._store.find(key) >= 0; };
+  NSMap.prototype['delete'] = function (key) {
+    return this._store.remove(key);
+  };
+  NSMap.prototype.clear = function () { this._store.clear(); };
+  NSMap.prototype.forEach = function (fn, thisArg) {
+    var all = this._store.entries.slice();
+    for (var i = 0; i < all.length; i++) {
+      fn.call(thisArg, all[i][1], all[i][0], this);
+    }
+  };
+  NSMap.prototype.keys = function () {
+    return this._store.entries.map(function (e) { return e[0]; });
+  };
+  NSMap.prototype.values = function () {
+    return this._store.entries.map(function (e) { return e[1]; });
+  };
+  NSMap.prototype.entries = function () {
+    return this._store.entries.map(function (e) { return [e[0], e[1]]; });
+  };
+  sized(NSMap.prototype);
+
+  function NSSet(init) {
+    if (!(this instanceof NSSet)) {
+      throw new TypeError("Constructor Set requires 'new'");
+    }
+    this._store = new Store();
+    if (init !== undefined && init !== null) {
+      for (var i = 0; i < init.length; i++) { this.add(init[i]); }
+    }
+  }
+
+  NSSet.prototype.add = function (value) {
+    this._store.set(value, value);
+    return this;
+  };
+  NSSet.prototype.has = function (value) {
+    return this._store.find(value) >= 0;
+  };
+  NSSet.prototype['delete'] = function (value) {
+    return this._store.remove(value);
+  };
+  NSSet.prototype.clear = function () { this._store.clear(); };
+  NSSet.prototype.forEach = function (fn, thisArg) {
+    var all = this._store.entries.slice();
+    for (var i = 0; i < all.length; i++) {
+      fn.call(thisArg, all[i][0], all[i][0], this);
+    }
+  };
+  NSSet.prototype.values = function () {
+    return this._store.entries.map(function (e) { return e[0]; });
+  };
+  NSSet.prototype.keys = NSSet.prototype.values;
+  sized(NSSet.prototype);
+
+  return { Map: NSMap, Set: NSSet };
+}());
+
+
 /* Promise, and the microtask queue it runs on.
  *
  * Duktape 2.7 is ES5.1 with pieces of ES2015 and has no Promise. Nothing
@@ -1021,6 +1325,11 @@ var NetSurfHostSupport = (function () {
 
     return {
       Promise: NetSurfPromiseSupport.promise,
+      Map: NetSurfCollections.Map,
+      Set: NetSurfCollections.Set,
+      /* the weak forms hold their keys strongly; see the note above */
+      WeakMap: NetSurfCollections.Map,
+      WeakSet: NetSurfCollections.Set,
       localStorage: NetSurfHostSupport.makeStorage(),
       sessionStorage: NetSurfHostSupport.makeStorage(),
       requestAnimationFrame: function (callback) {
