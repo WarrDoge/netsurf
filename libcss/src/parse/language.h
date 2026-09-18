@@ -45,6 +45,9 @@ typedef struct css_language {
 	/** Interned strings */
 	lwc_string **strings;
 
+	/** Custom properties (--name) defined so far in this stylesheet */
+	struct css_custom_prop *custom;
+
 	lwc_string *default_namespace;	/**< Default namespace URI */
 	css_namespace *namespaces;	/**< Array of namespace mappings */
 	uint32_t num_namespaces;	/**< Number of namespace mappings */
@@ -53,6 +56,13 @@ typedef struct css_language {
 css_error css__language_create(css_stylesheet *sheet, css_parser *parser,
 		void **language);
 css_error css__language_destroy(css_language *language);
+
+/**
+ * Release the custom property definitions collected while parsing.
+ *
+ * \param c  The parser whose definitions to free.
+ */
+void css__language_custom_props_destroy(css_language *c);
 
 /******************************************************************************
  * Helper functions                                                           *

@@ -1664,7 +1664,13 @@ css_error parseProperty(css_parser *parser)
 	const css_token *token;
 	css_error error;
 
-	/* property -> IDENT ws */
+	/* property -> IDENT ws
+	 *          -> '-' IDENT ws
+	 *
+	 * The second form is a custom property. The lexer has no rule for a
+	 * doubled leading hyphen and splits one, so --page-bg arrives as
+	 * CHAR '-' followed by IDENT "-page-bg".
+	 */
 
 	switch (state->substate) {
 	case Initial:
@@ -1678,6 +1684,22 @@ css_error parseProperty(css_parser *parser)
 				return error;
 
 			return done(parser);
+		}
+
+		if (token->type == CSS_TOKEN_CHAR &&
+				lwc_string_length(token->idata) == 1 &&
+				lwc_string_data(token->idata)[0] == '-') {
+			error = getToken(parser, &token);
+			if (error != CSS_OK)
+				return error;
+
+			if (token->type == CSS_TOKEN_EOF) {
+				error = pushBack(parser, token);
+				if (error != CSS_OK)
+					return error;
+
+				return done(parser);
+			}
 		}
 
 		if (token->type != CSS_TOKEN_IDENT) {

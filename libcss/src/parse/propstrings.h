@@ -144,6 +144,9 @@ enum {
 
 	LAST_COLOUR = YELLOWGREEN,
 
+	/* Functional notation */
+	VAR,
+
 	LAST_KNOWN
 };
 

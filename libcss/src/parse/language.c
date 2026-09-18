@@ -150,6 +150,7 @@ css_error css__language_create(css_stylesheet *sheet, css_parser *parser,
 
 	c->sheet = sheet;
 	c->state = CHARSET_PERMITTED;
+	c->custom = NULL;
 	c->default_namespace = NULL;
 	c->namespaces = NULL;
 	c->num_namespaces = 0;
@@ -184,6 +185,8 @@ css_error css__language_destroy(css_language *language)
 
 		free(language->namespaces);
 	}
+
+	css__language_custom_props_destroy(language);
 
 	parserutils_stack_destroy(language->context);
 
@@ -1090,10 +1093,379 @@ css_error handleEndBlockContent(css_language *c, const parserutils_vector *vecto
 	return CSS_OK;
 }
 
+/******************************************************************************
+ * Custom properties						              *
+ ******************************************************************************/
+
+/** Largest number of var() expansions allowed inside one another. */
+#define MAX_VAR_DEPTH 16
+
+/**
+ * A custom property definition, holding the tokens of its value.
+ *
+ * The tokens are copied because the parser reuses its token vector for every
+ * declaration, and the interned strings they name are referenced for as long
+ * as the definition lives.
+ */
+struct css_custom_prop {
+	lwc_string *name;
+	parserutils_vector *value;
+	struct css_custom_prop *next;
+};
+
+
+static void custom_prop_destroy(struct css_custom_prop *prop)
+{
+	int32_t i = 0;
+	const css_token *token;
+
+	if (prop->value != NULL) {
+		while ((token = parserutils_vector_iterate(prop->value,
+				&i)) != NULL) {
+			if (token->idata != NULL) {
+				lwc_string_unref(token->idata);
+			}
+		}
+		parserutils_vector_destroy(prop->value);
+	}
+
+	if (prop->name != NULL) {
+		lwc_string_unref(prop->name);
+	}
+
+	free(prop);
+}
+
+
+/* exported interface documented in parse/language.h */
+void css__language_custom_props_destroy(css_language *c)
+{
+	while (c->custom != NULL) {
+		struct css_custom_prop *victim = c->custom;
+
+		c->custom = victim->next;
+		custom_prop_destroy(victim);
+	}
+}
+
+
+static struct css_custom_prop *custom_prop_find(css_language *c,
+		lwc_string *name)
+{
+	struct css_custom_prop *prop;
+	bool match = false;
+
+	for (prop = c->custom; prop != NULL; prop = prop->next) {
+		if (lwc_string_isequal(prop->name, name,
+				&match) == lwc_error_ok && match) {
+			return prop;
+		}
+	}
+
+	return NULL;
+}
+
+
+/**
+ * Copy a range of tokens, taking a reference to each interned string.
+ */
+static css_error copy_tokens(const parserutils_vector *vector,
+		int32_t start, int32_t end, parserutils_vector **out)
+{
+	parserutils_vector *copy;
+	int32_t i;
+
+	if (parserutils_vector_create(sizeof(css_token),
+			(end > start) ? (end - start) : 1,
+			&copy) != PARSERUTILS_OK) {
+		return CSS_NOMEM;
+	}
+
+	for (i = start; i < end; i++) {
+		const css_token *token = parserutils_vector_peek(vector, i);
+
+		if (token == NULL) {
+			break;
+		}
+
+		if (parserutils_vector_append(copy,
+				(void *) token) != PARSERUTILS_OK) {
+			parserutils_vector_destroy(copy);
+			return CSS_NOMEM;
+		}
+
+		if (token->idata != NULL) {
+			lwc_string_ref(token->idata);
+		}
+	}
+
+	*out = copy;
+
+	return CSS_OK;
+}
+
+
+/**
+ * Read the name of a custom property.
+ *
+ * The lexer has no rule for a doubled leading hyphen, so it splits one:
+ * --page-bg arrives as CHAR '-' followed by IDENT "-page-bg". The IDENT is
+ * used as the name, which keeps one dash and is still unambiguous.
+ *
+ * \param vector  Vector of tokens to process
+ * \param ctx	  Pointer to vector iteration context, advanced past the name
+ * \return the name, borrowed from the token, or NULL if there is no name
+ */
+static lwc_string *custom_prop_name(const parserutils_vector *vector,
+		int32_t *ctx)
+{
+	int32_t pos = *ctx;
+	const css_token *token;
+
+	token = parserutils_vector_peek(vector, pos);
+	if (tokenIsChar(token, '-') == false) {
+		return NULL;
+	}
+	pos++;
+
+	token = parserutils_vector_peek(vector, pos);
+	if (token == NULL || token->type != CSS_TOKEN_IDENT ||
+			lwc_string_length(token->idata) < 2 ||
+			lwc_string_data(token->idata)[0] != '-') {
+		return NULL;
+	}
+	pos++;
+
+	*ctx = pos;
+
+	return token->idata;
+}
+
+
+/**
+ * Record a custom property definition, replacing any earlier one.
+ */
+static css_error custom_prop_define(css_language *c, lwc_string *name,
+		const parserutils_vector *vector, int32_t start)
+{
+	struct css_custom_prop *prop;
+	parserutils_vector *value = NULL;
+	css_error error;
+	int32_t end = start;
+
+	while (parserutils_vector_peek(vector, end) != NULL) {
+		end++;
+	}
+
+	error = copy_tokens(vector, start, end, &value);
+	if (error != CSS_OK) {
+		return error;
+	}
+
+	prop = custom_prop_find(c, name);
+	if (prop != NULL) {
+		int32_t i = 0;
+		const css_token *token;
+
+		while ((token = parserutils_vector_iterate(prop->value,
+				&i)) != NULL) {
+			if (token->idata != NULL) {
+				lwc_string_unref(token->idata);
+			}
+		}
+		parserutils_vector_destroy(prop->value);
+		prop->value = value;
+
+		return CSS_OK;
+	}
+
+	prop = malloc(sizeof(*prop));
+	if (prop == NULL) {
+		parserutils_vector_destroy(value);
+		return CSS_NOMEM;
+	}
+
+	prop->name = lwc_string_ref(name);
+	prop->value = value;
+	prop->next = c->custom;
+	c->custom = prop;
+
+	return CSS_OK;
+}
+
+
+static css_error substitute_vars(css_language *c,
+		const parserutils_vector *vector, int32_t start, int32_t end,
+		parserutils_vector *out, unsigned int depth);
+
+
+/**
+ * Expand one var() reference into the output vector.
+ *
+ * \param c	  Parsing context
+ * \param vector  Vector holding the reference
+ * \param ctx	  Index of the token after the var( function, advanced past
+ *		  the closing parenthesis
+ * \param out	  Vector to append the expansion to
+ * \param depth	  Current expansion depth
+ * \return CSS_OK on success, CSS_INVALID if the reference cannot be resolved
+ */
+static css_error substitute_one_var(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		parserutils_vector *out, unsigned int depth)
+{
+	struct css_custom_prop *prop;
+	lwc_string *name;
+	int32_t pos = *ctx;
+	int32_t fallback_start = -1;
+	int32_t fallback_end = -1;
+	int32_t nesting = 1;
+	const css_token *token;
+
+	consumeWhitespace(vector, &pos);
+
+	name = custom_prop_name(vector, &pos);
+	if (name == NULL) {
+		return CSS_INVALID;
+	}
+
+	consumeWhitespace(vector, &pos);
+
+	/* the rest of the function is an optional fallback */
+	token = parserutils_vector_peek(vector, pos);
+	if (tokenIsChar(token, ',')) {
+		pos++;
+		consumeWhitespace(vector, &pos);
+		fallback_start = pos;
+	}
+
+	while (nesting > 0) {
+		token = parserutils_vector_peek(vector, pos);
+		if (token == NULL) {
+			return CSS_INVALID; /* unbalanced */
+		}
+
+		if (token->type == CSS_TOKEN_FUNCTION ||
+				tokenIsChar(token, '(')) {
+			nesting++;
+		} else if (tokenIsChar(token, ')')) {
+			nesting--;
+			if (nesting == 0) {
+				fallback_end = pos;
+				break;
+			}
+		}
+
+		pos++;
+	}
+
+	*ctx = pos + 1;
+
+	prop = custom_prop_find(c, name);
+	if (prop != NULL) {
+		int32_t value_end = 0;
+
+		while (parserutils_vector_peek(prop->value,
+				value_end) != NULL) {
+			value_end++;
+		}
+
+		return substitute_vars(c, prop->value, 0, value_end, out,
+				depth + 1);
+	}
+
+	if (fallback_start < 0) {
+		/* An unresolvable reference with no fallback makes the whole
+		 * declaration invalid, which is what the specification asks
+		 * for and what dropping it here achieves.
+		 */
+		return CSS_INVALID;
+	}
+
+	return substitute_vars(c, vector, fallback_start, fallback_end, out,
+			depth + 1);
+}
+
+
+/**
+ * Copy a range of tokens into \a out, expanding any var() references.
+ */
+css_error substitute_vars(css_language *c,
+		const parserutils_vector *vector, int32_t start, int32_t end,
+		parserutils_vector *out, unsigned int depth)
+{
+	int32_t pos = start;
+	bool match = false;
+
+	if (depth > MAX_VAR_DEPTH) {
+		return CSS_INVALID; /* a custom property referring to itself */
+	}
+
+	while (pos < end) {
+		const css_token *token = parserutils_vector_peek(vector, pos);
+
+		if (token == NULL) {
+			break;
+		}
+
+		if (token->type == CSS_TOKEN_FUNCTION &&
+		    lwc_string_caseless_isequal(token->idata,
+				c->strings[VAR], &match) == lwc_error_ok &&
+		    match) {
+			css_error error;
+
+			pos++;
+			error = substitute_one_var(c, vector, &pos, out,
+					depth);
+			if (error != CSS_OK) {
+				return error;
+			}
+
+			continue;
+		}
+
+		if (parserutils_vector_append(out,
+				(void *) token) != PARSERUTILS_OK) {
+			return CSS_NOMEM;
+		}
+
+		pos++;
+	}
+
+	return CSS_OK;
+}
+
+
+/**
+ * Does this range of tokens contain a var() reference?
+ */
+static bool uses_var(css_language *c, const parserutils_vector *vector,
+		int32_t start)
+{
+	const css_token *token;
+	bool match = false;
+	int32_t pos;
+
+	for (pos = start;
+	     (token = parserutils_vector_peek(vector, pos)) != NULL;
+	     pos++) {
+		if (token->type == CSS_TOKEN_FUNCTION &&
+		    lwc_string_caseless_isequal(token->idata,
+				c->strings[VAR], &match) == lwc_error_ok &&
+		    match) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
 css_error handleDeclaration(css_language *c, const parserutils_vector *vector)
 {
 	css_error error;
 	const css_token *token, *ident;
+	lwc_string *custom;
 	int32_t ctx = 0;
 	context_entry *entry;
 	css_rule *rule;
@@ -1117,6 +1489,25 @@ css_error handleDeclaration(css_language *c, const parserutils_vector *vector)
 	/* Strip any leading whitespace (can happen if in nested block) */
 	consumeWhitespace(vector, &ctx);
 
+	/* A custom property declaration begins with a doubled hyphen, which
+	 * the lexer splits into CHAR '-' and an IDENT.
+	 */
+	custom = custom_prop_name(vector, &ctx);
+	if (custom != NULL) {
+		consumeWhitespace(vector, &ctx);
+
+		token = parserutils_vector_iterate(vector, &ctx);
+		if (token == NULL || tokenIsChar(token, ':') == false)
+			return CSS_INVALID;
+
+		consumeWhitespace(vector, &ctx);
+
+		return custom_prop_define(c, custom, vector, ctx);
+	}
+
+	ctx = 0;
+	consumeWhitespace(vector, &ctx);
+
 	/* IDENT ws ':' ws value
 	 *
 	 * In CSS 2.1, value is any1, so '{' or ATKEYWORD => parse error
@@ -1132,6 +1523,46 @@ css_error handleDeclaration(css_language *c, const parserutils_vector *vector)
 		return CSS_INVALID;
 
 	consumeWhitespace(vector, &ctx);
+
+	if (uses_var(c, vector, ctx)) {
+		/* Substitute and parse the result, rather than keeping the
+		 * declaration unresolved until the cascade. The value a
+		 * custom property had where it was defined is therefore the
+		 * value every use of it sees, so a property redefined per
+		 * element or inside a media query is not honoured. Doing
+		 * better means retaining the declaration and reparsing it
+		 * per element, which needs the cascade to be able to call
+		 * the parser.
+		 */
+		parserutils_vector *expanded = NULL;
+		int32_t end = ctx;
+		int32_t sub_ctx = 0;
+
+		while (parserutils_vector_peek(vector, end) != NULL)
+			end++;
+
+		if (parserutils_vector_create(sizeof(css_token),
+				(end > ctx) ? (end - ctx) : 1,
+				&expanded) != PARSERUTILS_OK)
+			return CSS_NOMEM;
+
+		error = substitute_vars(c, vector, ctx, end, expanded, 0);
+		if (error == CSS_OK) {
+			if (rule->type == CSS_RULE_FONT_FACE) {
+				css_rule_font_face *ff_rule =
+						(css_rule_font_face *) rule;
+				error = css__parse_font_descriptor(c, ident,
+						expanded, &sub_ctx, ff_rule);
+			} else {
+				error = parseProperty(c, ident, expanded,
+						&sub_ctx, rule);
+			}
+		}
+
+		parserutils_vector_destroy(expanded);
+
+		return error;
+	}
 
 	if (rule->type == CSS_RULE_FONT_FACE) {
 		css_rule_font_face * ff_rule = (css_rule_font_face *) rule;
