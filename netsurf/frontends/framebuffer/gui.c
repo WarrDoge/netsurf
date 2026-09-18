@@ -484,7 +484,13 @@ process_cmdline(int argc, char** argv)
 
 	NSLOG(netsurf, INFO, "argc %d, argv %p", argc, argv);
 
-	nsfb_enumerate_surface_types(framebuffer_pick_default_fename, NULL);
+	/* the surface named at build time wins if it was compiled in */
+	fename = NETSURF_FB_FRONTEND;
+	if (nsfb_type_from_name(fename) == NSFB_SURFACE_NONE) {
+		fename = NULL;
+		nsfb_enumerate_surface_types(framebuffer_pick_default_fename,
+					     NULL);
+	}
 
 	febpp = 32;
 

@@ -10,6 +10,9 @@
 CFLAGS += -std=c99 -g \
 	  -Dnsframebuffer -Dsmall
 
+# default surface provider
+CFLAGS += '-DNETSURF_FB_FRONTEND="$(NETSURF_FB_FRONTEND)"'
+
 #resource path
 CFLAGS += '-DNETSURF_FB_RESPATH="$(NETSURF_FB_RESPATH)"'
 
