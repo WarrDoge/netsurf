@@ -232,7 +232,9 @@ interface Document : Node {
   readonly attribute Element? documentElement;
   HTMLCollection getElementsByTagName(DOMString localName);
   HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
-  HTMLCollection getElementsByClassName(DOMString classNames);
+  /* getElementsByClassName is provided by polyfill.js, for the reason
+   * given above querySelector.
+   */
 
   [NewObject] Element createElement(DOMString localName);
   [NewObject] Element createElementNS(DOMString? namespace, DOMString qualifiedName);
@@ -312,7 +314,9 @@ interface Element : Node {
 
   HTMLCollection getElementsByTagName(DOMString localName);
   HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
-  HTMLCollection getElementsByClassName(DOMString classNames);
+  /* getElementsByClassName is provided by polyfill.js, for the reason
+   * given above querySelector.
+   */
 };
 [Exposed=Window]
 interface NamedNodeMap {

@@ -1,0 +1,22 @@
+<html>
+  <head>
+    <title>dataset and getElementsByClassName test</title>
+  </head>
+  <body>
+    <p class="one target" data-user-name="ada">first</p>
+    <p class="target">second</p>
+    <div id="log">unset</div>
+    <script>
+      var log = document.getElementById("log");
+      var found = document.getElementsByClassName("target");
+      var first = document.getElementsByClassName("one target")[0];
+      var report = "count=" + found.length +
+                   " name=" + first.dataset.userName;
+      first.dataset.userName = "grace";
+      report += " after=" + first.getAttribute("data-user-name");
+      report += " has=" + ("userName" in first.dataset);
+      log.removeChild(log.firstChild);
+      log.appendChild(document.createTextNode(report));
+    </script>
+  </body>
+</html>

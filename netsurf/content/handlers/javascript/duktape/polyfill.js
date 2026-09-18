@@ -1198,7 +1198,34 @@ var NetSurfPromiseSupport = (function () {
   install(typeof DocumentFragment !== 'undefined' ?
           DocumentFragment.prototype : null);
 
+  /* getElementsByClassName over the same matcher.  A live HTMLCollection is
+   * not what comes back -- this is the static list querySelectorAll returns
+   * -- which differs only for code that holds the result across a DOM
+   * change and expects it to follow.
+   */
+  function byClassName(root, names) {
+    var parts = String(names).split(/\s+/).filter(function (n) {
+      return n.length > 0;
+    });
+
+    if (parts.length === 0) {
+      return [];
+    }
+
+    return queryAll(root, '.' + parts.join('.'));
+  }
+
+  if (typeof Document !== 'undefined') {
+    define(Document.prototype, 'getElementsByClassName', function (names) {
+      return byClassName(this, names);
+    });
+  }
+
   if (typeof Element !== 'undefined') {
+    define(Element.prototype, 'getElementsByClassName', function (names) {
+      return byClassName(this, names);
+    });
+
     define(Element.prototype, 'matches', function (text) {
       return matchesSelector(this, text);
     });
@@ -1213,6 +1240,74 @@ var NetSurfPromiseSupport = (function () {
       return null;
     });
   }
+}());
+
+/* dataset, over the element's data-* attributes.
+ *
+ * A Proxy rather than a snapshot object, so that a property written through
+ * it reaches the attribute and a property read from it sees an attribute
+ * some other code has changed.
+ */
+(function () {
+  if (typeof HTMLElement === 'undefined' || typeof Proxy === 'undefined') {
+    return;
+  }
+
+  function toAttribute(name) {
+    return 'data-' + String(name).replace(/[A-Z]/g, function (c) {
+      return '-' + c.toLowerCase();
+    });
+  }
+
+  function toProperty(name) {
+    return name.slice(5).replace(/-([a-z])/g, function (whole, c) {
+      return c.toUpperCase();
+    });
+  }
+
+  function makeDataset(element) {
+    return new Proxy({}, {
+      get: function (target, name) {
+        if (typeof name !== 'string') {
+          return undefined;
+        }
+        var value = element.getAttribute(toAttribute(name));
+        return (value === null) ? undefined : value;
+      },
+      set: function (target, name, value) {
+        element.setAttribute(toAttribute(name), String(value));
+        return true;
+      },
+      has: function (target, name) {
+        return element.hasAttribute(toAttribute(name));
+      },
+      deleteProperty: function (target, name) {
+        element.removeAttribute(toAttribute(name));
+        return true;
+      },
+      ownKeys: function () {
+        var out = [];
+        var attrs = element.attributes;
+        var i;
+
+        for (i = 0; i < attrs.length; i++) {
+          if (attrs[i].name.indexOf('data-') === 0) {
+            out.push(toProperty(attrs[i].name));
+          }
+        }
+
+        return out;
+      }
+    });
+  }
+
+  Object.defineProperty(HTMLElement.prototype, 'dataset', {
+    get: function () {
+      return makeDataset(this);
+    },
+    enumerable: false,
+    configurable: true
+  });
 }());
 
 /* Storage, and requestAnimationFrame over the timer.

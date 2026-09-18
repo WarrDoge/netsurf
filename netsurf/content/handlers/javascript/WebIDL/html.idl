@@ -116,7 +116,9 @@ interface HTMLElement : Element {
   attribute DOMString lang;
   attribute boolean translate;
   attribute DOMString dir;
-  [SameObject] readonly attribute DOMStringMap dataset;
+  /* dataset is provided by polyfill.js, for the reason given above
+   * querySelector in dom.idl.
+   */
 
   // user interaction
   attribute boolean hidden;
